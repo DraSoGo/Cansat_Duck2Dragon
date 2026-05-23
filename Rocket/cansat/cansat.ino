@@ -1,9 +1,11 @@
 // CANSAT Duck2Dragon — Main Flight Computer
 // Target: TTGO SX1276 LoRa32 (ESP32)
 //
-// Sensors:  GPS NEO-6M (UART), BNO055 (I2C), ADXL375 (I2C),
-//           MS5611 (I2C), INA219 (I2C)
+// Sensors:  GPS NEO-6M (UART), BNO085 I2C 0x4A, ADXL375 I2C 0x54,
+//           MS5611 I2C 0x77, INA219 I2C 0x40
+// Storage:  LittleFS internal flash (~1.5 MB)
 // Telem:    LoRa SX1276 @ 922.525 MHz (Thailand 920-925 ISM band)
+// NOTE:     Arduino IDE -> Tools -> Partition Scheme -> "Default 4MB with spiffs"
 //
 // CSV (23 fields):
 // millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,
@@ -13,13 +15,13 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <Wire.h>
+#include <LittleFS.h>
 #include <TinyGPS++.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BNO055.h>
-#include <Adafruit_ADXL375.h>
+#include <Adafruit_BNO08x.h>
+// #include <Adafruit_ADXL375.h>
 #include <Adafruit_INA219.h>
 #include <MS5611.h>
-#include <utility/imumaths.h>
 
 // ---------------- Pin map ----------------
 // LoRa (VSPI, built-in)
@@ -51,12 +53,19 @@
 HardwareSerial GPSserial(1);
 TinyGPSPlus gps;
 
-Adafruit_BNO055   bno     = Adafruit_BNO055(55, 0x28);
-Adafruit_ADXL375  hgAccel = Adafruit_ADXL375(54321);
-Adafruit_INA219   ina219;
+Adafruit_BNO08x   bno;
+// Adafruit_ADXL375  hgAccel = Adafruit_ADXL375(54321);
+Adafruit_INA219   ina219(0x40);
 MS5611            ms5611(0x77);
 
-bool okBNO = false, okADXL = false, okMS = false, okINA = false;
+sh2_SensorValue_t bnoSensorValue;
+
+bool okBNO = false, okMS = false, okINA = false;
+// bool okADXL = false;
+
+File    logFile;
+bool    okFS = false;
+const char* LOG_PATH = "/cansat.csv";
 
 // ---------------- Setup ----------------
 void setup()
@@ -86,12 +95,21 @@ void setup()
   Wire.setTimeOut(100);
   for(int i = 0; i < 9 && !okBNO; i++)
   {
-    okBNO  = bno.begin();      if (okBNO)  { bno.setExtCrystalUse(true); Serial.println("# BNO055 OK"); }   else Serial.println("# BNO055 FAIL");
+    okBNO = bno.begin_I2C(0x4A, &Wire);
+    if (okBNO)
+    {
+      bno.enableReport(SH2_ROTATION_VECTOR);
+      bno.enableReport(SH2_LINEAR_ACCELERATION);
+      bno.enableReport(SH2_GYROSCOPE_CALIBRATED);
+      Serial.println("# BNO085 OK");
+    }
+    else Serial.println("# BNO085 FAIL");
   }
-  for(int i = 0; i < 9 && !okADXL; i++)
-  {
-    okADXL = hgAccel.begin();  if (okADXL) { hgAccel.setDataRate(ADXL343_DATARATE_400_HZ); Serial.println("# ADXL375 OK"); } else Serial.println("# ADXL375 FAIL");
-  }
+  // for(int i = 0; i < 9 && !okADXL; i++)
+  // {
+  //   okADXL = hgAccel.begin(0x54, &Wire);
+  //   if (okADXL) { hgAccel.setDataRate(ADXL343_DATARATE_400_HZ); Serial.println("# ADXL375 OK"); } else Serial.println("# ADXL375 FAIL");
+  // }
   for(int i = 0; i < 9 && !okMS; i++)
   {
     okMS   = ms5611.begin();   if (okMS)   { ms5611.setOversampling(OSR_HIGH); Serial.println("# MS5611 OK"); } else Serial.println("# MS5611 FAIL");
@@ -100,6 +118,23 @@ void setup()
   {
     okINA  = ina219.begin();   if (okINA)  Serial.println("# INA219 OK");  else Serial.println("# INA219 FAIL");
   }
+
+  // LittleFS
+  if (LittleFS.begin(true))
+  {
+    okFS = true;
+    Serial.println("# LittleFS OK");
+    logFile = LittleFS.open(LOG_PATH, "a");
+    if (logFile)
+    {
+      logFile.print("# boot millis=");
+      logFile.println(millis());
+      logFile.println("# millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current");
+      logFile.flush();
+    }
+    else { Serial.println("# LittleFS file open FAIL"); okFS = false; }
+  }
+  else Serial.println("# LittleFS FAIL");
 }
 
 // ---------------- Helpers ----------------
@@ -157,43 +192,58 @@ String buildCsvLine()
     line += "0.00,0.00,0.00,";
   }
 
-  // 8-17: BNO055 accel(3), gyro(3), quaternion(4)
+  // 8-17: BNO085 accel(3), gyro(3), quaternion(4)
+  float bax = 0, bay = 0, baz = 0;
+  float bgx = 0, bgy = 0, bgz = 0;
+  float qw = 1, qx = 0, qy = 0, qz = 0;
   if (okBNO)
   {
-    sensors_event_t accelEv, gyroEv;
-    bno.getEvent(&accelEv, Adafruit_BNO055::VECTOR_LINEARACCEL);
-    bno.getEvent(&gyroEv,  Adafruit_BNO055::VECTOR_GYROSCOPE);
-    imu::Quaternion q = bno.getQuat();
+    if (bno.getSensorEvent(&bnoSensorValue))
+    {
+      switch (bnoSensorValue.sensorId)
+      {
+        case SH2_LINEAR_ACCELERATION:
+          bax = bnoSensorValue.un.linearAcceleration.x;
+          bay = bnoSensorValue.un.linearAcceleration.y;
+          baz = bnoSensorValue.un.linearAcceleration.z;
+          break;
+        case SH2_GYROSCOPE_CALIBRATED:
+          bgx = bnoSensorValue.un.gyroscope.x;
+          bgy = bnoSensorValue.un.gyroscope.y;
+          bgz = bnoSensorValue.un.gyroscope.z;
+          break;
+        case SH2_ROTATION_VECTOR:
+          qw = bnoSensorValue.un.rotationVector.real;
+          qx = bnoSensorValue.un.rotationVector.i;
+          qy = bnoSensorValue.un.rotationVector.j;
+          qz = bnoSensorValue.un.rotationVector.k;
+          break;
+      }
+    }
+  }
+  appendFloat(line, bax, 4);
+  appendFloat(line, bay, 4);
+  appendFloat(line, baz, 4);
+  appendFloat(line, bgx, 4);
+  appendFloat(line, bgy, 4);
+  appendFloat(line, bgz, 4);
+  appendFloat(line, qw, 4);
+  appendFloat(line, qx, 4);
+  appendFloat(line, qy, 4);
+  appendFloat(line, qz, 4);
 
-    appendFloat(line, accelEv.acceleration.x, 4);
-    appendFloat(line, accelEv.acceleration.y, 4);
-    appendFloat(line, accelEv.acceleration.z, 4);
-    appendFloat(line, gyroEv.gyro.x, 4);
-    appendFloat(line, gyroEv.gyro.y, 4);
-    appendFloat(line, gyroEv.gyro.z, 4);
-    appendFloat(line, q.w(), 4);
-    appendFloat(line, q.x(), 4);
-    appendFloat(line, q.y(), 4);
-    appendFloat(line, q.z(), 4);
-  }
-  else
-  {
-    line += "0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,1.0000,0.0000,0.0000,0.0000,";
-  }
-
-  // 18-20: ADXL375 high-G xyz (in g units)
-  if (okADXL)
-  {
-    sensors_event_t hg;
-    hgAccel.getEvent(&hg);
-    appendFloat(line, hg.acceleration.x / 9.80665, 2);
-    appendFloat(line, hg.acceleration.y / 9.80665, 2);
-    appendFloat(line, hg.acceleration.z / 9.80665, 2);
-  }
-  else
-  {
-    line += "0.00,0.00,0.00,";
-  }
+  // 18-20: ADXL375 high-G xyz — commented out (not installed)
+  // if (okADXL)
+  // {
+  //   sensors_event_t hg;
+  //   hgAccel.getEvent(&hg);
+  //   appendFloat(line, hg.acceleration.x / 9.80665, 2);
+  //   appendFloat(line, hg.acceleration.y / 9.80665, 2);
+  //   appendFloat(line, hg.acceleration.z / 9.80665, 2);
+  // }
+  // else
+  // {
+  line += "0.00,0.00,0.00,";
 
   // 21-22: INA219 voltage, current  (LAST two fields — no trailing comma)
   float bus = 0, cur = 0;
@@ -227,12 +277,23 @@ void loop()
   LoRa.print(csv);
   LoRa.endPacket();
 
+  // Log to LittleFS
+  if (okFS && logFile)
+  {
+    logFile.println(csv);
+    logFile.flush();
+  }
+
   // Local debug
   Serial.println(csv);
 
   // Attempt re-init of failed sensors
-  if (!okBNO)  okBNO  = bno.begin();
-  if (!okADXL) okADXL = hgAccel.begin();
+  if (!okBNO)
+  {
+    okBNO = bno.begin_I2C(0x4A, &Wire);
+    if (okBNO) { bno.enableReport(SH2_ROTATION_VECTOR); bno.enableReport(SH2_LINEAR_ACCELERATION); bno.enableReport(SH2_GYROSCOPE_CALIBRATED); }
+  }
+  // if (!okADXL) okADXL = hgAccel.begin(0x54, &Wire);
   if (!okMS)   okMS   = ms5611.begin();
   if (!okINA)  okINA  = ina219.begin();
 }
