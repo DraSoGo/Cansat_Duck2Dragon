@@ -11,6 +11,7 @@ void setup()
   Serial.begin(115200);
   while (!Serial);
   Wire.begin();
+  delay(100);  // let VCC stabilize before PROM read
 
   if (!ms5611.begin())
   {

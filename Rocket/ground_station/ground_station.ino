@@ -12,9 +12,9 @@
 #define LORA_RST   23     // Ground station uses 23 (per reference)
 #define LORA_DIO0  26
 
-#define BAND       922525000
+#define BAND       922250000
 #define LORA_BW    125E3
-#define LORA_SF    9
+#define LORA_SF    11
 
 void setup()
 {

@@ -1,11 +1,12 @@
 #include <SPI.h>
 #include <SD.h>
 
-// HSPI pins (separate from LoRa VSPI)
-#define SD_CS    13
-#define SD_MOSI  15
-#define SD_MISO  2
-#define SD_CLK   4
+// HSPI pins — avoids VSPI conflict with internal flash
+// GPIO 19 (VSPI MISO) conflicts with ESP32 flash → crash loop
+#define SD_CS    15
+#define SD_MOSI  13
+#define SD_MISO  12
+#define SD_CLK   14
 
 SPIClass hspi(HSPI);
 
