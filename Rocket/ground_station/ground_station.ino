@@ -46,6 +46,7 @@ void loop()
     {
       Serial.write((char)LoRa.read());
     }
+    Serial.println();  // Add newline after CSV
     // Append RSSI/SNR as a comment line so Python logger sees it
     // but the CSV line above stays parseable as 23 fields.
     Serial.print("# RSSI=");

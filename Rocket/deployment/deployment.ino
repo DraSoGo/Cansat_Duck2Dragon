@@ -8,13 +8,13 @@
 
 // ----- Adjustable parameters (TUNE THESE) -----
 #define SERVO_PIN              9       // Servo PWM pin
-#define SERVO_LOCKED_ANGLE     25      // Pre-deploy / locked position
-#define SERVO_DEPLOY_ANGLE     120     // Released / deployed position
+#define SERVO_LOCKED_ANGLE     35      // Pre-deploy / locked position
+#define SERVO_DEPLOY_ANGLE     110     // Released / deployed position
 #define SERVO_SWEEP_DELAY_MS   3       // Delay between degree steps during release sweep
 
-#define ARM_ALTITUDE_M         10.0    // Must reach this AGL altitude before apogee logic arms
-#define APOGEE_DROP_M          5.0     // Altitude must drop this many meters below max
-#define APOGEE_CONFIRM_COUNT   5       // Consecutive descending readings required
+#define ARM_ALTITUDE_M         50    // Must reach this AGL altitude before apogee logic arms
+#define APOGEE_CONFIRM_COUNT   2       // Consecutive descending readings required
+#define APOGEE_DEADBAND_M      0.5    // Ignore altitude changes smaller than this (noise filter)
 #define BASELINE_SAMPLES       20      // Samples averaged at startup for ground pressure
 
 #define LED_PIN                13      // Built-in LED
@@ -27,8 +27,9 @@ State state = IDLE;
 MS5611 ms5611(0x77);
 Servo  myservo;
 
+float time = 0.1; 
 float baselinePressure = 0;
-float maxAltitude      = 0;
+float prevAltitude     = 0;
 uint8_t confirmCount   = 0;
 
 float readAltitude()
@@ -42,11 +43,7 @@ float readAltitude()
 void deployParachute()
 {
   Serial.println("APOGEE -> deploy");
-  for (int pos = SERVO_LOCKED_ANGLE; pos <= SERVO_DEPLOY_ANGLE; pos++)
-  {
-    myservo.write(pos);
-    delay(SERVO_SWEEP_DELAY_MS);
-  }
+  myservo.write(120);
   digitalWrite(LED_PIN, HIGH);
   state = DEPLOYED;
 }
@@ -58,7 +55,13 @@ void setup()
   digitalWrite(LED_PIN, LOW);
 
   myservo.attach(SERVO_PIN);
+  // myservo.write(0);
+  // Serial.println("Servo Zero");
+  myservo.write(120);
+  delay(5000);
   myservo.write(SERVO_LOCKED_ANGLE);
+  Serial.println("Servo Lock");
+  delay(10000);
 
   Wire.begin();
   if (!ms5611.begin())
@@ -105,14 +108,14 @@ void loop()
       if (alt > ARM_ALTITUDE_M)
       {
         state = ASCENDING;
-        maxAltitude = alt;
+        prevAltitude = alt;
         Serial.println("State: ASCENDING");
       }
       break;
 
     case ASCENDING:
-      if (alt > maxAltitude) maxAltitude = alt;
-      if (alt < (maxAltitude - APOGEE_DROP_M))
+      // Detect descent with deadband — ignore noise < APOGEE_DEADBAND_M
+      if (alt < prevAltitude - APOGEE_DEADBAND_M)
       {
         confirmCount++;
         if (confirmCount >= APOGEE_CONFIRM_COUNT)
@@ -120,11 +123,17 @@ void loop()
           deployParachute();
         }
       }
-      else
+      else if (alt > prevAltitude + APOGEE_DEADBAND_M)
       {
-        confirmCount = 0;   // Reset noise
+        confirmCount = 0;   // Reset only on clear ascent, not noise
       }
-
+      // Within deadband → keep confirmCount unchanged
+      prevAltitude = alt;
+      if (time >= 10)
+      {
+        time += 0.1;
+        deployParachute();
+      }
       // Slow blink while armed
       if (millis() - lastBlink > 500)
       {
@@ -134,12 +143,13 @@ void loop()
       break;
 
     case DEPLOYED:
-      // One-shot: do nothing further
+      delay(1000000);
       break;
+      // One-shot: do nothing further
   }
 
   Serial.print("alt=");    Serial.print(alt, 2);
-  Serial.print("\tmax=");  Serial.print(maxAltitude, 2);
+  Serial.print("\tprev="); Serial.print(prevAltitude, 2);
   Serial.print("\tcnt=");  Serial.print(confirmCount);
   Serial.print("\tst=");   Serial.println(state);
 

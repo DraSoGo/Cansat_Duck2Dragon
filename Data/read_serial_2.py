@@ -11,9 +11,9 @@ CSV fields (23):
   high_ax,high_ay,high_az,voltage,current
 
 Usage:
-    python3 read_serial.py                       # default /dev/ttyUSB0
-    python3 read_serial.py /dev/ttyUSB0
-    python3 read_serial.py /dev/ttyUSB0 115200   # custom baud
+    python3 read_serial.py                       # default /dev/ttyACM0
+    python3 read_serial.py /dev/ttyACM0
+    python3 read_serial.py /dev/ttyACM0 115200   # custom baud
 """
 import sys
 import os
@@ -23,9 +23,9 @@ from datetime import datetime
 import serial
 
 
-DEFAULT_PORT = "/dev/ttyUSB0"
+DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 115200
-LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.txt")
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log_2.txt")
 
 CSV_HEADER = (
     "millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,"

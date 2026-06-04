@@ -195,10 +195,30 @@ void setup()
     logFile = LittleFS.open(LOG_PATH, "a");
     if (logFile)
     {
+      logFile.println();  // blank line separator
       logFile.print("# boot millis=");
       logFile.println(millis());
+
+      // Filesystem status
+      String fsInfo = "# LittleFS: ";
+      fsInfo += LittleFS.usedBytes();
+      fsInfo += " / ";
+      fsInfo += LittleFS.totalBytes();
+      fsInfo += " bytes used (";
+      fsInfo += (int)(fsUsedRatio() * 100);
+      fsInfo += "%)";
+
+      logFile.println(fsInfo);
       logFile.println("# millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current");
       logFile.flush();
+
+      // Transmit boot status via LoRa
+      LoRa.beginPacket();
+      LoRa.print("# boot millis=");
+      LoRa.println(millis());
+      LoRa.println(fsInfo);
+      LoRa.endPacket();
+      delay(100);
     }
     else { okFS = false; }
   }
@@ -313,7 +333,7 @@ String buildCsvLine()
   appendFloat(line, hay, 2);
   appendFloat(line, haz, 2);
 
-  // 21-22: INA219 voltage, current (no trailing comma)
+  // 21-22: INA219 voltage, current
   float bus = 0, cur = 0;
   if (okINA)
   {
@@ -323,6 +343,7 @@ String buildCsvLine()
   line += String(bus, (unsigned int)3);
   line += ',';
   line += String(cur, (unsigned int)3);
+  line += ',';
 
   return line;
 }
