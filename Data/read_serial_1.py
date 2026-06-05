@@ -5,10 +5,10 @@ CANSAT Duck2Dragon — Ground Station Serial Logger.
 Reads incoming CSV telemetry from the Ground Station's USB serial port
 and appends each line verbatim to Data/log.txt.
 
-CSV fields (23):
+CSV fields (24):
   millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,
   ax,ay,az,gx,gy,gz,qw,qx,qy,qz,
-  high_ax,high_ay,high_az,voltage,current
+  high_ax,high_ay,high_az,voltage,current,watt
 
 Usage:
     python3 read_serial.py                       # default /dev/ttyACM0
@@ -30,9 +30,9 @@ LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log_1.txt")
 CSV_HEADER = (
     "millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,"
     "ax,ay,az,gx,gy,gz,qw,qx,qy,qz,"
-    "high_ax,high_ay,high_az,voltage,current"
+    "high_ax,high_ay,high_az,voltage,current,watt"
 )
-CSV_FIELDS = 23
+CSV_FIELDS = 24
 
 
 def parse_csv(line: str) -> bool:
@@ -77,6 +77,8 @@ def main() -> int:
 
         rx_count = 0
         err_count = 0
+        last_rssi = None
+        last_snr = None
 
         while True:
             try:
@@ -97,21 +99,28 @@ def main() -> int:
             if line.startswith("#"):
                 # Status / RSSI / SNR lines from ground station
                 print(f"\033[90m{line}\033[0m")  # grey
+
+                # Extract RSSI/SNR for display with next CSV
+                if "RSSI=" in line and "SNR=" in line:
+                    try:
+                        parts = line.split()
+                        for p in parts:
+                            if p.startswith("RSSI="):
+                                last_rssi = int(p.split("=")[1])
+                            elif p.startswith("SNR="):
+                                last_snr = float(p.split("=")[1])
+                    except (ValueError, IndexError):
+                        pass
                 continue
 
             if parse_csv(line):
                 rx_count += 1
-                parts = line.split(",")
-                # Quick live display: millis, alt_baro, temp, sats, RSSI handled separately
-                try:
-                    ms    = int(parts[0])
-                    alt   = float(parts[5])
-                    temp  = float(parts[6])
-                    sats  = int(parts[4])
-                    volt  = float(parts[21])
-                    print(f"[{ms:>10}ms] alt={alt:>8.2f}m  T={temp:>6.2f}°C  sats={sats}  V={volt:.3f}  #{rx_count}")
-                except (ValueError, IndexError):
-                    print(line)
+
+                # Show full CSV + RSSI/SNR
+                rssi_str = f"RSSI={last_rssi}" if last_rssi is not None else "RSSI=--"
+                snr_str = f"SNR={last_snr:.2f}" if last_snr is not None else "SNR=--"
+                print(f"[#{rx_count:>4}] {line}  |  {rssi_str} {snr_str}")
+
             else:
                 err_count += 1
                 print(f"[read_serial] malformed ({len(line.split(','))} fields): {line[:80]}", file=sys.stderr)

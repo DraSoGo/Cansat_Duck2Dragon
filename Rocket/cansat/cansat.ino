@@ -8,10 +8,10 @@
 // Telem:    LoRa SX1276 @ 922.525 MHz (Thailand 920-925 ISM band)
 // NOTE:     Arduino IDE -> Tools -> Partition Scheme -> "Default 4MB with spiffs"
 //
-// CSV (23 fields):
+// CSV (24 fields):
 // millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,
 // ax,ay,az,gx,gy,gz,qw,qx,qy,qz,
-// high_ax,high_ay,high_az,voltage,current
+// high_ax,high_ay,high_az,voltage,current,watt
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -184,7 +184,7 @@ void setup()
   }
   for(int i = 0; i < 9 && !okADXL; i++)
   {
-    okADXL = hgAccel.begin(0x54, &Wire);
+    okADXL = hgAccel.begin(0x54);
     if (okADXL) hgAccel.setDataRate(ADXL343_DATARATE_400_HZ);
   }
 
@@ -209,7 +209,7 @@ void setup()
       fsInfo += "%)";
 
       logFile.println(fsInfo);
-      logFile.println("# millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current");
+      logFile.println("# millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt");
       logFile.flush();
 
       // Transmit boot status via LoRa
@@ -333,16 +333,20 @@ String buildCsvLine()
   appendFloat(line, hay, 2);
   appendFloat(line, haz, 2);
 
-  // 21-22: INA219 voltage, current
+  // 21-23: INA219 voltage, current, watt
   float bus = 0, cur = 0;
   if (okINA)
   {
     bus = ina219.getBusVoltage_V();
     cur = ina219.getCurrent_mA();
   }
+  float watt = bus * (cur / 1000.0);
+
   line += String(bus, (unsigned int)3);
   line += ',';
   line += String(cur, (unsigned int)3);
+  line += ',';
+  line += String(watt, (unsigned int)3);
   line += ',';
 
   return line;
@@ -384,5 +388,5 @@ void loop()
   }
   if (!okMS)  { okMS  = ms5611.begin(); if (okMS) ms5611.setOversampling(OSR_HIGH); }
   if (!okINA)   okINA = ina219.begin();
-  if (!okADXL) { okADXL = hgAccel.begin(0x54, &Wire); if (okADXL) hgAccel.setDataRate(ADXL343_DATARATE_400_HZ); }
+  if (!okADXL) { okADXL = hgAccel.begin(0x54); if (okADXL) hgAccel.setDataRate(ADXL343_DATARATE_400_HZ); }
 }
