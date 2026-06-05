@@ -519,3 +519,34 @@ class SerialReaderTests(unittest.TestCase):
         self.assertTrue(fake.closed)
         self.assertIsNone(reader.serial_obj)
         self.assertTrue(events.empty())
+
+
+class StateAndAlertTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def packet(self, voltage=3.8, sats=8, rssi=-60, arrival=1000.0):
+        line = (
+            f"128518,8.367500,100.043922,-1.80,{sats},56.02,24.98,1006.54,"
+            "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+            f"1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,{voltage:.3f},-90.500,-0.333"
+        )
+        return self.monitor.TelemetryParser.parse_packet(line, "port1", rssi, 11.75, arrival)
+
+    def test_port_state_counts_packets_and_malformed_lines(self):
+        state = self.monitor.PortState("port1")
+        state.record_packet(self.packet())
+        state.record_malformed("bad,line")
+
+        self.assertEqual(state.packet_count, 1)
+        self.assertEqual(state.malformed_count, 1)
+        self.assertEqual(state.latest_packet.millis, 128518)
+
+    def test_alerts_flag_low_voltage_weak_rssi_no_gps_and_stale(self):
+        packet = self.packet(voltage=3.3, sats=0, rssi=-120, arrival=900.0)
+        alerts = self.monitor.evaluate_alerts(packet, now=1005.0)
+
+        self.assertIn("low_voltage", alerts)
+        self.assertIn("weak_rssi", alerts)
+        self.assertIn("no_gps_lock", alerts)
+        self.assertIn("stale_packet", alerts)

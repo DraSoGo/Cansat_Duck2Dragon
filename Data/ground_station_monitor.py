@@ -96,6 +96,69 @@ class TelemetryPacket:
         ]
 
 
+LOW_VOLTAGE_THRESHOLD = 3.5
+WEAK_RSSI_THRESHOLD = -110
+STALE_PACKET_SECONDS = 3.0
+MALFORMED_BURST_THRESHOLD = 5
+
+
+@dataclass
+class PortState:
+    source: str
+    status: str = "offline"
+    message: str = ""
+    latest_raw_line: str = ""
+    latest_packet: Optional[TelemetryPacket] = None
+    latest_rssi: Optional[int] = None
+    latest_snr: Optional[float] = None
+    packet_count: int = 0
+    malformed_count: int = 0
+    last_seen_time: Optional[float] = None
+    recent_malformed: int = 0
+
+    def record_status(self, status: str, message: str = "") -> None:
+        self.status = status
+        self.message = message
+
+    def record_raw(self, line: str, arrival_time: float) -> None:
+        self.latest_raw_line = line
+        self.last_seen_time = arrival_time
+
+    def record_link(self, rssi: Optional[int], snr: Optional[float]) -> None:
+        if rssi is not None:
+            self.latest_rssi = rssi
+        if snr is not None:
+            self.latest_snr = snr
+
+    def record_packet(self, packet: TelemetryPacket) -> None:
+        self.latest_packet = packet
+        self.packet_count += 1
+        self.recent_malformed = 0
+        self.last_seen_time = packet.arrival_time
+
+    def record_malformed(self, line: str) -> None:
+        self.latest_raw_line = line
+        self.malformed_count += 1
+        self.recent_malformed += 1
+
+
+def evaluate_alerts(packet: Optional[TelemetryPacket], now: Optional[float] = None) -> set[str]:
+    if packet is None:
+        return {"no_packet"}
+
+    current_time = time.time() if now is None else now
+    alerts: set[str] = set()
+    if packet.voltage < LOW_VOLTAGE_THRESHOLD:
+        alerts.add("low_voltage")
+    if packet.rssi is not None and packet.rssi < WEAK_RSSI_THRESHOLD:
+        alerts.add("weak_rssi")
+    if not packet.gps_valid:
+        alerts.add("no_gps_lock")
+    if current_time - packet.arrival_time > STALE_PACKET_SECONDS:
+        alerts.add("stale_packet")
+    return alerts
+
+
 class TelemetryParser:
     LINK_RE = re.compile(r"RSSI=(-?\d+)\s+SNR=(-?\d+(?:\.\d+)?)")
 
