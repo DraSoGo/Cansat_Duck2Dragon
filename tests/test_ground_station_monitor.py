@@ -685,13 +685,40 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertFalse(second.stopped)
         self.assertIs(app.readers["port1"], second)
         self.assertIs(app.reader_threads["port1"], second.thread)
+        self.assertTrue(app.disconnect1_button.winfo_exists())
+        self.assertTrue(app.disconnect2_button.winfo_exists())
+
+        app._disconnect_port("port1")
+        self.assertTrue(second.stopped)
+        self.assertNotIn("port1", app.readers)
+        self.assertEqual(app.status_vars["port1"].get(), "offline: disconnected")
+
+    def test_stop_logging_control_closes_active_logger(self):
+        app = self.make_app()
+
+        class DummyLogWriter:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        writer = DummyLogWriter()
+        app.log_writer = writer
+
+        self.assertTrue(app.stop_logging_button.winfo_exists())
+        app._stop_logging()
+
+        self.assertTrue(writer.closed)
+        self.assertIsNone(app.log_writer)
+        self.assertIn("Logging stopped", app.summary_var.get())
 
     def test_chart_figures_are_created_and_refreshed_from_packets(self):
         app = self.make_app(charts=True)
 
         self.assertEqual(app.gps_ax.get_title(), "GPS Track")
         self.assertEqual(app.alt_ax.get_title(), "Altitude")
-        self.assertEqual(app.link_ax.get_title(), "RSSI")
+        self.assertEqual(app.link_ax.get_title(), "RSSI/SNR")
         for source in ("port1", "port2"):
             figures = getattr(app, f"{source}_figures")
             self.assertEqual(set(figures), {"altitude", "voltage", "rssi"})
@@ -703,24 +730,53 @@ class GroundStationMonitorAppTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(app.gps_ax.lines), 1)
         self.assertGreaterEqual(len(app.alt_ax.lines), 2)
-        self.assertEqual(len(app.link_ax.lines), 2)
+        self.assertEqual(len(app.link_ax.lines), 4)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["altitude"][1].lines), 1)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["voltage"][1].lines), 1)
-        self.assertGreaterEqual(len(getattr(app, "port1_figures")["rssi"][1].lines), 1)
+        self.assertGreaterEqual(len(getattr(app, "port1_figures")["rssi"][1].lines), 2)
 
     def test_merge_link_chart_refreshes_for_non_selected_duplicate_packets(self):
         app = self.make_app(charts=True)
 
         app.port_states["port1"].record_link(-50, 9.0)
         app._handle_line("port1", self.packet_line(millis=1), arrival_time=1000.0)
-        self.assertEqual([line.get_label() for line in app.link_ax.lines], ["Port 1"])
+        self.assertEqual([line.get_label() for line in app.link_ax.lines], ["Port 1 RSSI", "Port 1 SNR"])
 
         app.port_states["port2"].record_link(-80, 8.0)
         app._handle_line("port2", self.packet_line(millis=1), arrival_time=1001.0)
 
         self.assertEqual(app.merged_count, 1)
         self.assertEqual(app.merge_buffer.selected[1].source, "port1")
-        self.assertEqual([line.get_label() for line in app.link_ax.lines], ["Port 1", "Port 2"])
+        self.assertEqual(
+            [line.get_label() for line in app.link_ax.lines],
+            ["Port 1 RSSI", "Port 1 SNR", "Port 2 RSSI", "Port 2 SNR"],
+        )
+
+    def test_merge_readout_includes_current_and_watt(self):
+        app = self.make_app()
+
+        app.port_states["port1"].record_link(-50, 9.0)
+        app._handle_line("port1", self.packet_line(millis=12), arrival_time=1000.0)
+
+        readout = app.readout_var.get()
+        self.assertIn("Voltage: 3.684 V", readout)
+        self.assertIn("Current: -90.500 mA", readout)
+        self.assertIn("Watt: -0.333 W", readout)
+
+    def test_port_detail_includes_raw_snr_and_log_path(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        app = self.make_app()
+        app.log_writer = self.monitor.LogWriter(pathlib.Path(temp_dir.name), session_id="session")
+
+        app._handle_line("port1", "# RSSI=-61 SNR=11.75", arrival_time=999.0)
+        packet_line = self.packet_line(millis=13)
+        app._handle_line("port1", packet_line, arrival_time=1000.0)
+
+        detail = app.port1_detail_var.get()
+        self.assertIn("SNR: 11.75", detail)
+        self.assertIn("Latest raw: 13,8.367500", detail)
+        self.assertIn(str(pathlib.Path(temp_dir.name) / "session_port1.csv"), detail)
 
     def test_replay_file_uses_speed_control_and_resets_invalid_speed(self):
         app = self.make_app()

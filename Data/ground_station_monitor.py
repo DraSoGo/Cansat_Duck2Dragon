@@ -625,6 +625,12 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Entry(frame, textvariable=self.baud_vars["port1"], width=8).grid(row=0, column=2, padx=4)
         ttk.Button(frame, text="Connect 1", command=lambda: self._connect_port("port1")).grid(row=0, column=3, padx=4)
         ttk.Label(frame, textvariable=self.status_vars["port1"]).grid(row=0, column=4, padx=4)
+        self.disconnect1_button = ttk.Button(
+            frame,
+            text="Disconnect 1",
+            command=lambda: self._disconnect_port("port1"),
+        )
+        self.disconnect1_button.grid(row=0, column=18, padx=2)
 
         ttk.Label(frame, text="Port 2").grid(row=0, column=5, padx=4)
         self.port2_combo = ttk.Combobox(frame, textvariable=self.port_vars["port2"], width=18)
@@ -632,9 +638,17 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Entry(frame, textvariable=self.baud_vars["port2"], width=8).grid(row=0, column=7, padx=4)
         ttk.Button(frame, text="Connect 2", command=lambda: self._connect_port("port2")).grid(row=0, column=8, padx=4)
         ttk.Label(frame, textvariable=self.status_vars["port2"]).grid(row=0, column=9, padx=4)
+        self.disconnect2_button = ttk.Button(
+            frame,
+            text="Disconnect 2",
+            command=lambda: self._disconnect_port("port2"),
+        )
+        self.disconnect2_button.grid(row=0, column=19, padx=2)
 
         ttk.Button(frame, text="Refresh Ports", command=self._refresh_ports).grid(row=0, column=10, padx=4)
         ttk.Button(frame, text="Start Logging", command=self._start_logging).grid(row=0, column=11, padx=4, sticky="w")
+        self.stop_logging_button = ttk.Button(frame, text="Stop Logging", command=self._stop_logging)
+        self.stop_logging_button.grid(row=0, column=20, padx=2)
         ttk.Button(frame, text="Replay Log", command=self._choose_replay_file).grid(row=0, column=12, padx=4)
         ttk.Label(frame, textvariable=self.summary_var).grid(row=0, column=13, padx=8, sticky="e")
         ttk.Label(frame, text="Replay x").grid(row=0, column=14, padx=2)
@@ -691,10 +705,10 @@ class GroundStationMonitorApp(tk.Tk):
         link_frame = ttk.LabelFrame(lower_charts, text="Link Quality")
         link_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         self.alt_fig, self.alt_ax, self.alt_canvas = self._make_figure(alt_frame, "Altitude", "m")
-        self.link_fig, self.link_ax, self.link_canvas = self._make_figure(link_frame, "RSSI", "dBm")
+        self.link_fig, self.link_ax, self.link_canvas = self._make_figure(link_frame, "RSSI/SNR", "dBm / dB")
         side = ttk.Frame(self.merge_tab)
         side.grid(row=1, column=1, sticky="nsew")
-        self.readout_var = tk.StringVar(value="Lat/Lon: --\nSats: --\nVoltage: --\nRSSI: --")
+        self.readout_var = tk.StringVar(value="Lat/Lon: --\nSats: --\nVoltage: --\nCurrent: --\nWatt: --\nRSSI: --")
         ttk.Label(side, textvariable=self.readout_var, justify="left").pack(anchor="w")
         event_frame = ttk.LabelFrame(side, text="Timeline Events")
         event_frame.pack(fill="x", pady=8)
@@ -761,6 +775,18 @@ class GroundStationMonitorApp(tk.Tk):
         if self.log_writer is None:
             self.log_writer = LogWriter()
             self.summary_var.set(f"Logging to {self.log_writer.log_dir}")
+            for source in self.port_states:
+                self._update_port_view(source, refresh_charts=False)
+
+    def _stop_logging(self) -> None:
+        if self.log_writer is None:
+            self.summary_var.set("Logging already stopped")
+            return
+        self.log_writer.close()
+        self.log_writer = None
+        self.summary_var.set("Logging stopped")
+        for source in self.port_states:
+            self._update_port_view(source, refresh_charts=False)
 
     def _connect_port(self, source: str) -> None:
         port = self.port_vars[source].get().strip()
@@ -777,6 +803,14 @@ class GroundStationMonitorApp(tk.Tk):
         reader = SerialReader(source, port, baud, SerialEventQueue(self.event_queue, generation))
         self.readers[source] = reader
         self.reader_threads[source] = reader.start()
+
+    def _disconnect_port(self, source: str) -> None:
+        self.reader_generations[source] += 1
+        self._stop_reader(source)
+        self.port_states[source].record_status("offline", "disconnected")
+        self.status_vars[source].set("offline: disconnected")
+        self.summary_var.set(f"{source}: disconnected")
+        self._update_port_view(source, refresh_charts=False)
 
     def _stop_reader(self, source: str) -> None:
         reader = self.readers.pop(source, None)
@@ -898,6 +932,7 @@ class GroundStationMonitorApp(tk.Tk):
         if line.startswith("#"):
             rssi, snr = TelemetryParser.parse_link_comment(line)
             state.record_link(rssi, snr)
+            self._update_port_view(source, refresh_charts=False)
             return
         try:
             packet = TelemetryParser.parse_packet(line, source, state.latest_rssi, state.latest_snr, arrival_time)
@@ -948,11 +983,19 @@ class GroundStationMonitorApp(tk.Tk):
         packet = state.latest_packet
         detail_var = getattr(self, f"{source}_detail_var")
         alerts_text = ", ".join(sorted(evaluate_port_alerts(state, now))) or "none"
+        raw_line = self._display_raw_line(state.latest_raw_line)
+        rssi_text = state.latest_rssi if state.latest_rssi is not None else "--"
+        snr_text = f"{state.latest_snr:.2f}" if state.latest_snr is not None else "--"
+        packet_snr_text = f"{packet.snr:.2f}" if packet is not None and packet.snr is not None else "--"
+        log_status = self._log_status(source)
         if packet is None:
             detail_var.set(
                 f"{source}: {state.status}\n"
                 f"Packets: 0\n"
                 f"Malformed: {state.malformed_count}\n"
+                f"RSSI: {rssi_text}  SNR: {snr_text}\n"
+                f"Latest raw: {raw_line}\n"
+                f"{log_status}\n"
                 f"Alerts: {alerts_text}"
             )
             return
@@ -960,7 +1003,10 @@ class GroundStationMonitorApp(tk.Tk):
             f"{source}: {state.status}\n"
             f"Packets: {state.packet_count}  Malformed: {state.malformed_count}\n"
             f"Alt: {packet.alt_baro:.2f} m  Voltage: {packet.voltage:.3f} V  "
-            f"RSSI: {packet.rssi if packet.rssi is not None else '--'}\n"
+            f"RSSI: {packet.rssi if packet.rssi is not None else '--'}  "
+            f"SNR: {packet_snr_text}\n"
+            f"Latest raw: {raw_line}\n"
+            f"{log_status}\n"
             f"Alerts: {alerts_text}"
         )
         if packet_for_row is not None:
@@ -980,6 +1026,22 @@ class GroundStationMonitorApp(tk.Tk):
                 tree.delete(tree.get_children()[-1])
         if refresh_charts:
             self._refresh_port_charts(source)
+
+    def _display_raw_line(self, line: str, limit: int = 140) -> str:
+        if not line:
+            return "--"
+        line = line.strip()
+        if len(line) <= limit:
+            return line
+        return line[: limit - 3] + "..."
+
+    def _log_status(self, source: str) -> str:
+        if self.log_writer is None:
+            return "Log: stopped"
+        path_func = getattr(self.log_writer, "_path", None)
+        if callable(path_func):
+            return f"Log: {path_func(source)}"
+        return "Log: active"
 
     def _replace_merged_packet(self, packet: TelemetryPacket) -> bool:
         for index, existing in enumerate(self.merged_log_packets):
@@ -1008,6 +1070,8 @@ class GroundStationMonitorApp(tk.Tk):
             f"Lat/Lon: {packet.lat:.6f}, {packet.lon:.6f}\n"
             f"Sats: {packet.sats}\n"
             f"Voltage: {packet.voltage:.3f} V\n"
+            f"Current: {packet.current:.3f} mA\n"
+            f"Watt: {packet.watt:.3f} W\n"
             f"RSSI: {packet.rssi if packet.rssi is not None else '--'}"
         )
         if rebuild_tree:
@@ -1060,17 +1124,22 @@ class GroundStationMonitorApp(tk.Tk):
         self.alt_canvas.draw_idle()
 
         self.link_ax.clear()
-        self.link_ax.set_title("RSSI")
+        self.link_ax.set_title("RSSI/SNR")
         self.link_ax.grid(True, alpha=0.3)
         self.link_ax.set_xlabel("sample")
-        self.link_ax.set_ylabel("dBm")
-        p1 = [packet.rssi for packet in self.port_packets["port1"][-100:] if packet.rssi is not None]
-        p2 = [packet.rssi for packet in self.port_packets["port2"][-100:] if packet.rssi is not None]
-        if p1:
-            self.link_ax.plot(p1, label="Port 1")
-        if p2:
-            self.link_ax.plot(p2, label="Port 2")
-        if p1 or p2:
+        self.link_ax.set_ylabel("dBm / dB")
+        plotted = False
+        for source, label in (("port1", "Port 1"), ("port2", "Port 2")):
+            packets_for_source = self.port_packets[source][-100:]
+            rssi = [packet.rssi for packet in packets_for_source if packet.rssi is not None]
+            snr = [packet.snr for packet in packets_for_source if packet.snr is not None]
+            if rssi:
+                self.link_ax.plot(rssi, label=f"{label} RSSI")
+                plotted = True
+            if snr:
+                self.link_ax.plot(snr, linestyle="--", label=f"{label} SNR")
+                plotted = True
+        if plotted:
             self.link_ax.legend(loc="lower left")
         self.link_canvas.draw_idle()
 
@@ -1078,19 +1147,31 @@ class GroundStationMonitorApp(tk.Tk):
         packets = self.port_packets[source][-100:]
         figures = getattr(self, f"{source}_figures")
         series = {
-            "altitude": ("Altitude", "m", [packet.alt_baro for packet in packets]),
-            "voltage": ("Voltage", "V", [packet.voltage for packet in packets]),
-            "rssi": ("RSSI", "dBm", [packet.rssi for packet in packets if packet.rssi is not None]),
+            "altitude": ("Altitude", "m", [("Altitude", [packet.alt_baro for packet in packets], "-")]),
+            "voltage": ("Voltage", "V", [("Voltage", [packet.voltage for packet in packets], "-")]),
+            "rssi": (
+                "RSSI/SNR",
+                "dBm / dB",
+                [
+                    ("RSSI", [packet.rssi for packet in packets if packet.rssi is not None], "-"),
+                    ("SNR", [packet.snr for packet in packets if packet.snr is not None], "--"),
+                ],
+            ),
         }
-        for key, (title, ylabel, values) in series.items():
+        for key, (title, ylabel, plot_series) in series.items():
             _figure, axis, canvas = figures[key]
             axis.clear()
             axis.set_title(title)
             axis.set_xlabel("sample")
             axis.set_ylabel(ylabel)
             axis.grid(True, alpha=0.3)
-            if values:
-                axis.plot(values)
+            plotted = False
+            for label, values, style in plot_series:
+                if values:
+                    axis.plot(values, linestyle=style, label=label)
+                    plotted = True
+            if plotted and len(plot_series) > 1:
+                axis.legend(loc="best")
             canvas.draw_idle()
 
     def _update_summary(self, now: Optional[float] = None) -> None:
