@@ -273,6 +273,7 @@ class LogWriter:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.session_id = session_id or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.started = datetime.now().isoformat(timespec="seconds")
         self.files = {
             "port1": self._open("port1"),
             "port2": self._open("port2"),
@@ -284,15 +285,20 @@ class LogWriter:
     def _open(self, suffix: str):
         return open(self.log_dir / f"{self.session_id}_{suffix}.csv", "a", buffering=1, newline="")
 
+    def _path(self, suffix: str) -> Path:
+        return self.log_dir / f"{self.session_id}_{suffix}.csv"
+
     def _write_headers(self) -> None:
-        started = datetime.now().isoformat(timespec="seconds")
         for source in ("port1", "port2"):
-            self.files[source].write(f"# session start {started}\n")
+            self.files[source].write(f"# session start {self.started}\n")
             self.files[source].write(f"# {CSV_HEADER}\n")
-        self.files["merged"].write(f"# session start {started}\n")
-        self.files["merged"].write(f"{CSV_HEADER},source,rssi,snr\n")
-        self.files["events"].write(f"# session start {started}\n")
+        self._write_merged_header(self.files["merged"])
+        self.files["events"].write(f"# session start {self.started}\n")
         self.files["events"].write("timestamp,event,note\n")
+
+    def _write_merged_header(self, file_obj) -> None:
+        file_obj.write(f"# session start {self.started}\n")
+        file_obj.write(f"{CSV_HEADER},source,rssi,snr\n")
 
     def write_raw(self, source: str, line: str) -> None:
         if source not in ("port1", "port2"):
@@ -304,6 +310,17 @@ class LogWriter:
         snr = "" if packet.snr is None else f"{packet.snr:.2f}"
         row = packet.csv_values() + [packet.source, rssi, snr]
         self.files["merged"].write(",".join(row) + "\n")
+
+    def rewrite_merged(self, packets: Iterable[TelemetryPacket]) -> None:
+        self.files["merged"].close()
+        with open(self._path("merged"), "w", newline="") as file_obj:
+            self._write_merged_header(file_obj)
+            for packet in packets:
+                rssi = "" if packet.rssi is None else str(packet.rssi)
+                snr = "" if packet.snr is None else f"{packet.snr:.2f}"
+                row = packet.csv_values() + [packet.source, rssi, snr]
+                file_obj.write(",".join(row) + "\n")
+        self.files["merged"] = self._open("merged")
 
     def write_event(self, event: str, note: str = "") -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
@@ -794,6 +811,8 @@ class GroundStationMonitorApp(tk.Tk):
             self._update_merge_view()
             return
         if self._replace_merged_packet(packet):
+            if self.log_writer is not None:
+                self.log_writer.rewrite_merged(self.merged_packets)
             self._update_merge_view(display_packet=packet, rebuild_tree=True)
 
     def _update_port_view(self, source: str, packet_for_row: Optional[TelemetryPacket] = None) -> None:

@@ -602,6 +602,14 @@ class GroundStationMonitorAppTests(unittest.TestCase):
             f"1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,{voltage:.3f},-90.500,-0.333"
         )
 
+    def merged_log_rows(self, path):
+        lines = [
+            line
+            for line in path.read_text().splitlines()
+            if line and not line.startswith("#")
+        ]
+        return list(csv.DictReader(lines))
+
     def test_connecting_same_source_twice_stops_previous_reader(self):
         app = self.make_app()
 
@@ -685,23 +693,11 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(app.merge_buffer.selected[200].source, "port1")
 
     def test_higher_rssi_duplicate_replaces_existing_merged_row(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
         app = self.make_app()
-
-        class DummyLogWriter:
-            def __init__(self):
-                self.merged = []
-
-            def write_raw(self, source, line):
-                pass
-
-            def write_merged(self, packet):
-                self.merged.append(packet)
-
-            def close(self):
-                pass
-
-        log_writer = DummyLogWriter()
-        app.log_writer = log_writer
+        app.log_writer = self.monitor.LogWriter(pathlib.Path(temp_dir.name), session_id="session")
+        merged_path = pathlib.Path(temp_dir.name) / "session_merged.csv"
 
         app.port_states["port1"].record_link(-80, 10.0)
         app._handle_line("port1", self.packet_line(millis=250), arrival_time=1000.0)
@@ -721,7 +717,12 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         values = app.merged_tree.item(rows[0], "values")
         self.assertEqual(values[1], "port2")
         self.assertEqual(int(values[4]), -50)
-        self.assertEqual(len(log_writer.merged), 1)
+
+        log_rows = self.merged_log_rows(merged_path)
+        rows_for_millis = [row for row in log_rows if row["millis"] == "250"]
+        self.assertEqual(len(rows_for_millis), 1)
+        self.assertEqual(rows_for_millis[0]["source"], "port2")
+        self.assertEqual(rows_for_millis[0]["rssi"], "-50")
 
     def test_non_tail_higher_rssi_duplicate_updates_replacement_readout(self):
         app = self.make_app()
