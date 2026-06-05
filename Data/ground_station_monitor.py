@@ -364,12 +364,17 @@ class SerialReader:
         try:
             self.serial_obj = self.serial_factory(self.port, self.baud, timeout=1)
         except Exception as exc:
+            if self.stop_event.is_set():
+                return False
             self.event_queue.put({
                 "type": "status",
                 "source": self.source,
                 "status": "reconnecting",
                 "message": str(exc),
             })
+            return False
+        if self.stop_event.is_set():
+            self._close_serial()
             return False
         self.event_queue.put({"type": "status", "source": self.source, "status": "connected"})
         return True

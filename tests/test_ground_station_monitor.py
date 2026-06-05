@@ -472,3 +472,50 @@ class SerialReaderTests(unittest.TestCase):
 
         self.assertTrue(stop_fake.closed)
         self.assertTrue(cleanup_fake.closed)
+
+    def test_serial_reader_suppresses_reconnecting_when_stopped_during_connect_failure(self):
+        events = queue.Queue()
+        reader = self.monitor.SerialReader(
+            source="port1",
+            port="/dev/fake",
+            baud=115200,
+            event_queue=events,
+            serial_factory=lambda port, baud, timeout: None,
+            reconnect_delay=0.01,
+        )
+
+        def factory(port, baud, timeout):
+            reader.stop_event.set()
+            raise OSError("missing after stop")
+
+        reader.serial_factory = factory
+
+        connected = reader._connect()
+
+        self.assertFalse(connected)
+        self.assertTrue(events.empty())
+
+    def test_serial_reader_closes_without_connected_when_stopped_during_connect_success(self):
+        events = queue.Queue()
+        fake = FakeSerial([])
+        reader = self.monitor.SerialReader(
+            source="port1",
+            port="/dev/fake",
+            baud=115200,
+            event_queue=events,
+            serial_factory=lambda port, baud, timeout: None,
+            reconnect_delay=0.01,
+        )
+
+        def factory(port, baud, timeout):
+            reader.stop_event.set()
+            return fake
+
+        reader.serial_factory = factory
+
+        connected = reader._connect()
+
+        self.assertFalse(connected)
+        self.assertTrue(fake.closed)
+        self.assertIsNone(reader.serial_obj)
+        self.assertTrue(events.empty())
