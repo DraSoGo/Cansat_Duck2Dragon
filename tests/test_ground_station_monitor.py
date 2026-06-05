@@ -580,11 +580,14 @@ class GroundStationMonitorAppTests(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
-    def make_app(self):
+    def make_app(self, charts=False):
         try:
             app = self.monitor.GroundStationMonitorApp()
         except self.monitor.tk.TclError as exc:
             self.skipTest(f"Tk display unavailable: {exc}")
+        if not charts:
+            app._refresh_merge_charts = lambda: None
+            app._refresh_port_charts = lambda source: None
         self.addCleanup(self.destroy_app, app)
         return app
 
@@ -673,6 +676,28 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertFalse(second.stopped)
         self.assertIs(app.readers["port1"], second)
         self.assertIs(app.reader_threads["port1"], second.thread)
+
+    def test_chart_figures_are_created_and_refreshed_from_packets(self):
+        app = self.make_app(charts=True)
+
+        self.assertEqual(app.gps_ax.get_title(), "GPS Track")
+        self.assertEqual(app.alt_ax.get_title(), "Altitude")
+        self.assertEqual(app.link_ax.get_title(), "RSSI")
+        for source in ("port1", "port2"):
+            figures = getattr(app, f"{source}_figures")
+            self.assertEqual(set(figures), {"altitude", "voltage", "rssi"})
+
+        app.port_states["port1"].record_link(-60, 9.0)
+        app._handle_line("port1", self.packet_line(millis=10), arrival_time=1000.0)
+        app.port_states["port2"].record_link(-70, 8.0)
+        app._handle_line("port2", self.packet_line(millis=11), arrival_time=1001.0)
+
+        self.assertGreaterEqual(len(app.gps_ax.lines), 1)
+        self.assertGreaterEqual(len(app.alt_ax.lines), 2)
+        self.assertEqual(len(app.link_ax.lines), 2)
+        self.assertGreaterEqual(len(getattr(app, "port1_figures")["altitude"][1].lines), 1)
+        self.assertGreaterEqual(len(getattr(app, "port1_figures")["voltage"][1].lines), 1)
+        self.assertGreaterEqual(len(getattr(app, "port1_figures")["rssi"][1].lines), 1)
 
     def test_lower_rssi_duplicate_does_not_insert_another_merged_row(self):
         app = self.make_app()

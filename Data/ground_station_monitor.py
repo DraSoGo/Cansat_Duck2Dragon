@@ -14,6 +14,9 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable, Iterable, Optional
 
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
 
 CSV_HEADER = (
     "millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,"
@@ -656,9 +659,26 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Label(self.merge_tab, textvariable=self.merge_status_var, font=("TkDefaultFont", 12, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8)
         )
-        self.map_placeholder = ttk.LabelFrame(self.merge_tab, text="Offline GPS Track")
-        self.map_placeholder.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-        ttk.Label(self.map_placeholder, text="Chart added in Task 8").pack(expand=True)
+        chart_area = ttk.Frame(self.merge_tab)
+        chart_area.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        chart_area.columnconfigure(0, weight=1)
+        chart_area.rowconfigure(0, weight=2)
+        chart_area.rowconfigure(1, weight=1)
+
+        gps_frame = ttk.LabelFrame(chart_area, text="Offline GPS Track")
+        gps_frame.grid(row=0, column=0, sticky="nsew")
+        self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_frame, "GPS Track", "relative north")
+
+        lower_charts = ttk.Frame(chart_area)
+        lower_charts.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        lower_charts.columnconfigure(0, weight=1)
+        lower_charts.columnconfigure(1, weight=1)
+        alt_frame = ttk.LabelFrame(lower_charts, text="Altitude")
+        alt_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        link_frame = ttk.LabelFrame(lower_charts, text="Link Quality")
+        link_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        self.alt_fig, self.alt_ax, self.alt_canvas = self._make_figure(alt_frame, "Altitude", "m")
+        self.link_fig, self.link_ax, self.link_canvas = self._make_figure(link_frame, "RSSI", "dBm")
         side = ttk.Frame(self.merge_tab)
         side.grid(row=1, column=1, sticky="nsew")
         self.readout_var = tk.StringVar(value="Lat/Lon: --\nSats: --\nVoltage: --\nRSSI: --")
@@ -681,10 +701,31 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Label(tab, textvariable=status, justify="left").grid(row=0, column=0, sticky="ew")
         chart_box = ttk.LabelFrame(tab, text="Charts")
         chart_box.grid(row=1, column=0, sticky="ew", pady=8)
-        ttk.Label(chart_box, text="Charts added in Task 8").pack()
+        chart_box.columnconfigure(0, weight=1)
+        chart_box.columnconfigure(1, weight=1)
+        chart_box.columnconfigure(2, weight=1)
+        figures = {}
+        for idx, (key, title, ylabel) in enumerate(
+            (("altitude", "Altitude", "m"), ("voltage", "Voltage", "V"), ("rssi", "RSSI", "dBm"))
+        ):
+            frame = ttk.Frame(chart_box)
+            frame.grid(row=0, column=idx, sticky="nsew", padx=3)
+            figures[key] = self._make_figure(frame, title, ylabel)
+        setattr(self, f"{source}_figures", figures)
         tree = self._make_tree(tab, ("millis", "alt_baro", "voltage", "rssi", "snr"))
         tree.grid(row=2, column=0, sticky="nsew")
         setattr(self, f"{source}_tree", tree)
+
+    def _make_figure(self, parent, title: str, ylabel: str):
+        figure = Figure(figsize=(4, 2.4), dpi=100)
+        axis = figure.add_subplot(111)
+        axis.set_title(title)
+        axis.set_xlabel("sample")
+        axis.set_ylabel(ylabel)
+        axis.grid(True, alpha=0.3)
+        canvas = FigureCanvasTkAgg(figure, master=parent)
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        return figure, axis, canvas
 
     def _make_tree(self, parent, columns: tuple[str, ...]) -> ttk.Treeview:
         tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
@@ -864,6 +905,7 @@ class GroundStationMonitorApp(tk.Tk):
             )
             while len(tree.get_children()) > 200:
                 tree.delete(tree.get_children()[-1])
+        self._refresh_port_charts(source)
 
     def _replace_merged_packet(self, packet: TelemetryPacket) -> bool:
         for index, existing in enumerate(self.merged_log_packets):
@@ -899,8 +941,10 @@ class GroundStationMonitorApp(tk.Tk):
                 self.merged_tree.delete(item)
             for merged_packet in self.merged_packets[-200:]:
                 self._insert_merged_row(merged_packet)
+            self._refresh_merge_charts()
             return
         self._insert_merged_row(packet)
+        self._refresh_merge_charts()
 
     def _insert_merged_row(self, packet: TelemetryPacket) -> None:
         self.merged_tree.insert(
@@ -910,6 +954,70 @@ class GroundStationMonitorApp(tk.Tk):
         )
         while len(self.merged_tree.get_children()) > 200:
             self.merged_tree.delete(self.merged_tree.get_children()[-1])
+
+    def _refresh_merge_charts(self) -> None:
+        packets = self.merged_packets[-100:]
+        gps_packets = [packet for packet in packets if packet.gps_valid]
+
+        self.gps_ax.clear()
+        self.gps_ax.set_title("GPS Track")
+        self.gps_ax.grid(True, alpha=0.3)
+        if gps_packets:
+            origin_lat = gps_packets[0].lat
+            origin_lon = gps_packets[0].lon
+            xs = [(packet.lon - origin_lon) * 111_320 for packet in gps_packets]
+            ys = [(packet.lat - origin_lat) * 110_540 for packet in gps_packets]
+            self.gps_ax.plot(xs, ys, marker="o", linewidth=1)
+            self.gps_ax.set_xlabel("relative east (m)")
+            self.gps_ax.set_ylabel("relative north (m)")
+        else:
+            self.gps_ax.text(0.5, 0.5, "No GPS lock", ha="center", va="center", transform=self.gps_ax.transAxes)
+        self.gps_canvas.draw_idle()
+
+        self.alt_ax.clear()
+        self.alt_ax.set_title("Altitude")
+        self.alt_ax.grid(True, alpha=0.3)
+        self.alt_ax.set_xlabel("sample")
+        self.alt_ax.set_ylabel("m")
+        if packets:
+            self.alt_ax.plot([packet.alt_baro for packet in packets], label="baro")
+            self.alt_ax.plot([packet.alt_gps for packet in packets], label="gps")
+            self.alt_ax.legend(loc="upper left")
+        self.alt_canvas.draw_idle()
+
+        self.link_ax.clear()
+        self.link_ax.set_title("RSSI")
+        self.link_ax.grid(True, alpha=0.3)
+        self.link_ax.set_xlabel("sample")
+        self.link_ax.set_ylabel("dBm")
+        p1 = [packet.rssi for packet in self.port_packets["port1"][-100:] if packet.rssi is not None]
+        p2 = [packet.rssi for packet in self.port_packets["port2"][-100:] if packet.rssi is not None]
+        if p1:
+            self.link_ax.plot(p1, label="Port 1")
+        if p2:
+            self.link_ax.plot(p2, label="Port 2")
+        if p1 or p2:
+            self.link_ax.legend(loc="lower left")
+        self.link_canvas.draw_idle()
+
+    def _refresh_port_charts(self, source: str) -> None:
+        packets = self.port_packets[source][-100:]
+        figures = getattr(self, f"{source}_figures")
+        series = {
+            "altitude": ("Altitude", "m", [packet.alt_baro for packet in packets]),
+            "voltage": ("Voltage", "V", [packet.voltage for packet in packets]),
+            "rssi": ("RSSI", "dBm", [packet.rssi for packet in packets if packet.rssi is not None]),
+        }
+        for key, (title, ylabel, values) in series.items():
+            _figure, axis, canvas = figures[key]
+            axis.clear()
+            axis.set_title(title)
+            axis.set_xlabel("sample")
+            axis.set_ylabel(ylabel)
+            axis.grid(True, alpha=0.3)
+            if values:
+                axis.plot(values)
+            canvas.draw_idle()
 
     def _update_summary(self) -> None:
         elapsed = int(time.time() - self.session_started)
