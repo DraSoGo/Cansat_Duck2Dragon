@@ -278,6 +278,10 @@ class ReplayReader:
                 self.sleep_func(self._line_delay())
                 if self.stop_event.is_set():
                     break
+                while self.pause_event.is_set() and not self.stop_event.is_set():
+                    self.sleep_func(0.05)
+                if self.stop_event.is_set():
+                    break
             self.event_queue.put({
                 "type": "line",
                 "source": self.source,

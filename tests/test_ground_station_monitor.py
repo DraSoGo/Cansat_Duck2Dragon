@@ -3,6 +3,7 @@ import importlib.util
 import pathlib
 import queue
 import tempfile
+import threading
 import time
 import unittest
 
@@ -303,3 +304,47 @@ class ReplayReaderTests(unittest.TestCase):
         self.assertAlmostEqual(slow_sleeps[0], 0.05)
         self.assertAlmostEqual(fast_sleeps[0], 0.01)
         self.assertLess(fast_sleeps[0], slow_sleeps[0])
+
+    def test_replay_reader_pause_during_delay_holds_next_line_until_resume(self):
+        delay_seen = threading.Event()
+        pause_wait_entered = threading.Event()
+        release_pause_sleep = threading.Event()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sample.csv"
+            path.write_text("first\nsecond\n")
+            events = queue.Queue()
+
+            def sleep_func(duration):
+                if duration < 0.05:
+                    reader.pause()
+                    delay_seen.set()
+                    return
+                if reader.pause_event.is_set():
+                    pause_wait_entered.set()
+                    release_pause_sleep.wait(timeout=1.0)
+
+            reader = self.monitor.ReplayReader(
+                path,
+                "port1",
+                events,
+                speed=2.0,
+                sleep_func=sleep_func,
+            )
+            thread = reader.start()
+
+            status = events.get(timeout=1.0)
+            first = events.get(timeout=1.0)
+            self.assertTrue(delay_seen.wait(timeout=1.0))
+            self.assertTrue(pause_wait_entered.wait(timeout=1.0))
+            self.assertTrue(events.empty())
+
+            reader.resume()
+            release_pause_sleep.set()
+            second = events.get(timeout=1.0)
+            thread.join(timeout=1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(status["status"], "replay")
+        self.assertEqual(first["line"], "first")
+        self.assertEqual(second["line"], "second")
