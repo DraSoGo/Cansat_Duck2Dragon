@@ -574,3 +574,106 @@ class StateAndAlertTests(unittest.TestCase):
 
         self.assertIn("malformed_burst", alerts)
         self.assertEqual(state.last_seen_time, 1001.0)
+
+
+class GroundStationMonitorAppTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def make_app(self):
+        try:
+            app = self.monitor.GroundStationMonitorApp()
+        except self.monitor.tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        self.addCleanup(self.destroy_app, app)
+        return app
+
+    def destroy_app(self, app):
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except self.monitor.tk.TclError:
+            pass
+
+    def packet_line(self, millis=128518, voltage=3.684):
+        return (
+            f"{millis},8.367500,100.043922,-1.80,12,56.02,24.98,1006.54,"
+            "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+            f"1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,{voltage:.3f},-90.500,-0.333"
+        )
+
+    def test_connecting_same_source_twice_stops_previous_reader(self):
+        app = self.make_app()
+
+        class DummyLogWriter:
+            def close(self):
+                pass
+
+        class FakeThread:
+            def __init__(self):
+                self.joined = False
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                self.joined = True
+
+        class FakeSerialReader:
+            instances = []
+
+            def __init__(self, source, port, baud, event_queue):
+                self.source = source
+                self.port = port
+                self.baud = baud
+                self.event_queue = event_queue
+                self.started = False
+                self.stopped = False
+                self.thread = FakeThread()
+                self.instances.append(self)
+
+            def start(self):
+                self.started = True
+                return self.thread
+
+            def stop(self):
+                self.stopped = True
+
+        original_reader = self.monitor.SerialReader
+        self.addCleanup(setattr, self.monitor, "SerialReader", original_reader)
+        self.monitor.SerialReader = FakeSerialReader
+        app.log_writer = DummyLogWriter()
+
+        app.port_vars["port1"].set("/dev/first")
+        app._connect_port("port1")
+        first = FakeSerialReader.instances[0]
+
+        app.port_vars["port1"].set("/dev/second")
+        app._connect_port("port1")
+        second = FakeSerialReader.instances[1]
+
+        self.assertTrue(first.started)
+        self.assertTrue(first.stopped)
+        self.assertTrue(first.thread.joined)
+        self.assertTrue(second.started)
+        self.assertFalse(second.stopped)
+        self.assertIs(app.readers["port1"], second)
+        self.assertIs(app.reader_threads["port1"], second.thread)
+
+    def test_lower_rssi_duplicate_does_not_insert_another_merged_row(self):
+        app = self.make_app()
+
+        app.port_states["port1"].record_link(-50, 10.0)
+        app._handle_line("port1", self.packet_line(millis=200), arrival_time=1000.0)
+
+        self.assertEqual(app.merged_count, 1)
+        self.assertEqual(len(app.merged_packets), 1)
+        self.assertEqual(len(app.merged_tree.get_children()), 1)
+
+        app.port_states["port2"].record_link(-80, 10.0)
+        app._handle_line("port2", self.packet_line(millis=200), arrival_time=1000.1)
+
+        self.assertEqual(app.merged_count, 1)
+        self.assertEqual(len(app.merged_packets), 1)
+        self.assertEqual(len(app.merged_tree.get_children()), 1)
+        self.assertEqual(app.merge_buffer.selected[200].source, "port1")

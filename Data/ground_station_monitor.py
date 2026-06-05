@@ -534,7 +534,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.merge_buffer = MergeBuffer()
         self.log_writer: Optional[LogWriter] = None
         self.readers: dict[str, SerialReader] = {}
-        self.reader_threads: list[threading.Thread] = []
+        self.reader_threads: dict[str, threading.Thread] = {}
         self.replay_readers: list[ReplayReader] = []
         self.session_started = time.time()
         self.merged_count = 0
@@ -663,12 +663,37 @@ class GroundStationMonitorApp(tk.Tk):
             self.summary_var.set(f"Logging to {self.log_writer.log_dir}")
 
     def _connect_port(self, source: str) -> None:
-        self._start_logging()
         port = self.port_vars[source].get().strip()
-        baud = int(self.baud_vars[source].get().strip())
+        try:
+            baud = int(self.baud_vars[source].get().strip())
+        except ValueError:
+            self.status_vars[source].set("invalid baud")
+            self.summary_var.set(f"{source}: invalid baud")
+            return
+        self._stop_reader(source)
+        self._start_logging()
         reader = SerialReader(source, port, baud, self.event_queue)
         self.readers[source] = reader
-        self.reader_threads.append(reader.start())
+        self.reader_threads[source] = reader.start()
+
+    def _stop_reader(self, source: str) -> None:
+        reader = self.readers.pop(source, None)
+        if reader is not None:
+            reader.stop()
+        thread = self.reader_threads.pop(source, None)
+        if thread is not None:
+            self._join_reader_thread(thread)
+
+    def _join_reader_thread(self, thread: threading.Thread) -> None:
+        if thread is threading.current_thread():
+            return
+        is_alive = getattr(thread, "is_alive", None)
+        should_join = True
+        if callable(is_alive):
+            should_join = is_alive()
+        join = getattr(thread, "join", None)
+        if should_join and callable(join):
+            join(timeout=0.5)
 
     def _choose_replay_file(self) -> None:
         path = filedialog.askopenfilename(
@@ -705,8 +730,10 @@ class GroundStationMonitorApp(tk.Tk):
         source = event.get("source")
         if event_type == "status" and source in self.port_states:
             state = self.port_states[source]
-            state.record_status(event.get("status", "offline"), event.get("message", ""))
-            self.status_vars[source].set(state.status)
+            status = event.get("status", "offline")
+            message = event.get("message", "")
+            state.record_status(status, message)
+            self.status_vars[source].set(f"{status}: {message}" if message else status)
             return
         if event_type == "line" and source in self.port_states:
             self._handle_line(source, event["line"], event.get("arrival_time", time.time()))
@@ -723,20 +750,21 @@ class GroundStationMonitorApp(tk.Tk):
         try:
             packet = TelemetryParser.parse_packet(line, source, state.latest_rssi, state.latest_snr, arrival_time)
         except ValueError:
-            state.record_malformed(line)
+            state.record_malformed(line, arrival_time)
+            self._update_port_view(source)
             return
         state.record_packet(packet)
         self.port_packets[source].append(packet)
         self.port_packets[source] = self.port_packets[source][-300:]
         selected = self.merge_buffer.add(packet)
+        self._update_port_view(source)
         if selected is packet:
             self.merged_count += 1
             self.merged_packets.append(packet)
             self.merged_packets = self.merged_packets[-300:]
             if self.log_writer is not None:
                 self.log_writer.write_merged(packet)
-        self._update_port_view(source)
-        self._update_merge_view()
+            self._update_merge_view()
 
     def _update_port_view(self, source: str) -> None:
         state = self.port_states[source]
@@ -784,10 +812,12 @@ class GroundStationMonitorApp(tk.Tk):
         self.summary_var.set(f"{elapsed}s  P1={p1}  P2={p2}  merged={self.merged_count}  malformed={malformed}")
 
     def destroy(self) -> None:
-        for reader in self.readers.values():
-            reader.stop()
+        for source in list(self.readers):
+            self._stop_reader(source)
         for reader in self.replay_readers:
             reader.stop()
+        for thread in list(self.reader_threads.values()):
+            self._join_reader_thread(thread)
         if self.log_writer is not None:
             self.log_writer.close()
         super().destroy()
