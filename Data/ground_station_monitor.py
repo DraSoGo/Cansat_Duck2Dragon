@@ -322,6 +322,114 @@ class ReplayReader:
         self.pause_event.clear()
 
 
+def default_serial_factory(port: str, baud: int, timeout: float):
+    import serial
+
+    return serial.Serial(port, baud, timeout=timeout)
+
+
+class SerialReader:
+    def __init__(
+        self,
+        source: str,
+        port: str,
+        baud: int,
+        event_queue: queue.Queue,
+        serial_factory: Callable = default_serial_factory,
+        reconnect_delay: float = 1.0,
+    ):
+        self.source = source
+        self.port = port
+        self.baud = baud
+        self.event_queue = event_queue
+        self.serial_factory = serial_factory
+        self.reconnect_delay = reconnect_delay
+        self.stop_event = threading.Event()
+        self.serial_obj = None
+
+    def start(self) -> threading.Thread:
+        thread = threading.Thread(target=self.run, name=f"SerialReader-{self.source}", daemon=True)
+        thread.start()
+        return thread
+
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            if not self._connect():
+                time.sleep(self.reconnect_delay)
+                continue
+            self._read_loop()
+
+    def _connect(self) -> bool:
+        try:
+            self.serial_obj = self.serial_factory(self.port, self.baud, timeout=1)
+        except Exception as exc:
+            self.event_queue.put({
+                "type": "status",
+                "source": self.source,
+                "status": "reconnecting",
+                "message": str(exc),
+            })
+            return False
+        self.event_queue.put({"type": "status", "source": self.source, "status": "connected"})
+        return True
+
+    def _read_loop(self) -> None:
+        assert self.serial_obj is not None
+        try:
+            while not self.stop_event.is_set():
+                raw = self.serial_obj.readline()
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line:
+                    self.event_queue.put({
+                        "type": "line",
+                        "source": self.source,
+                        "line": line,
+                        "arrival_time": time.time(),
+                        "mode": "serial",
+                    })
+        except Exception as exc:
+            self.event_queue.put({
+                "type": "status",
+                "source": self.source,
+                "status": "reconnecting",
+                "message": str(exc),
+            })
+        finally:
+            self._close_serial()
+
+    def _close_serial(self) -> None:
+        if self.serial_obj is not None:
+            try:
+                self.serial_obj.close()
+            finally:
+                self.serial_obj = None
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self._close_serial()
+
+    def run_once_for_test(self) -> None:
+        if self._connect():
+            assert self.serial_obj is not None
+            raw = self.serial_obj.readline()
+            if raw:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                self.event_queue.put({
+                    "type": "line",
+                    "source": self.source,
+                    "line": line,
+                    "arrival_time": time.time(),
+                    "mode": "serial",
+                })
+            self._close_serial()
+
+    def try_connect_once_for_test(self) -> None:
+        self._connect()
+        self._close_serial()
+
+
 def main() -> int:
     print("Duck2Dragon Monitor parser module loaded.")
     return 0

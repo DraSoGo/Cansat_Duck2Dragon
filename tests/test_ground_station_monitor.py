@@ -348,3 +348,66 @@ class ReplayReaderTests(unittest.TestCase):
         self.assertEqual(status["status"], "replay")
         self.assertEqual(first["line"], "first")
         self.assertEqual(second["line"], "second")
+
+
+class FakeSerial:
+    def __init__(self, lines):
+        self.lines = list(lines)
+        self.closed = False
+
+    def readline(self):
+        if not self.lines:
+            return b""
+        item = self.lines.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+class SerialReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def test_serial_reader_emits_decoded_line(self):
+        events = queue.Queue()
+        fake = FakeSerial([b"# RSSI=-61 SNR=11.75\r\n"])
+        reader = self.monitor.SerialReader(
+            source="port1",
+            port="/dev/fake",
+            baud=115200,
+            event_queue=events,
+            serial_factory=lambda port, baud, timeout: fake,
+            reconnect_delay=0.01,
+        )
+
+        reader.run_once_for_test()
+
+        status = events.get_nowait()
+        line = events.get_nowait()
+        self.assertEqual(status["status"], "connected")
+        self.assertEqual(line["line"], "# RSSI=-61 SNR=11.75")
+
+    def test_serial_reader_reports_reconnecting_on_factory_error(self):
+        events = queue.Queue()
+
+        def factory(port, baud, timeout):
+            raise OSError("missing device")
+
+        reader = self.monitor.SerialReader(
+            source="port2",
+            port="/dev/missing",
+            baud=115200,
+            event_queue=events,
+            serial_factory=factory,
+            reconnect_delay=0.01,
+        )
+
+        reader.try_connect_once_for_test()
+
+        event = events.get_nowait()
+        self.assertEqual(event["type"], "status")
+        self.assertEqual(event["source"], "port2")
+        self.assertEqual(event["status"], "reconnecting")
