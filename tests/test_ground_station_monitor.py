@@ -185,3 +185,24 @@ class LogWriterTests(unittest.TestCase):
 
         self.assertIn("source,rssi,snr", text)
         self.assertIn("port1,-61,11.75", text)
+
+    def test_events_log_includes_session_start_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
+            writer.close()
+
+            lines = (pathlib.Path(tmp) / "session_events.csv").read_text().splitlines()
+
+        self.assertTrue(lines[0].startswith("# session start "))
+        self.assertEqual(lines[1], "timestamp,event,note")
+
+    def test_event_log_sanitizes_event_and_note_newlines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
+            writer.write_event("drop\nline\rbreak", "note\nline\rbreak")
+            writer.close()
+
+            lines = (pathlib.Path(tmp) / "session_events.csv").read_text().splitlines()
+
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[2].endswith(",drop line break,note line break"))

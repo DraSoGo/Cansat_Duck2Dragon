@@ -217,6 +217,7 @@ class LogWriter:
             self.files[source].write(f"# {CSV_HEADER}\n")
         self.files["merged"].write(f"# session start {started}\n")
         self.files["merged"].write(f"{CSV_HEADER},source,rssi,snr\n")
+        self.files["events"].write(f"# session start {started}\n")
         self.files["events"].write("timestamp,event,note\n")
 
     def write_raw(self, source: str, line: str) -> None:
@@ -232,8 +233,9 @@ class LogWriter:
 
     def write_event(self, event: str, note: str = "") -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
+        safe_event = event.replace("\n", " ").replace("\r", " ")
         safe_note = note.replace("\n", " ").replace("\r", " ")
-        self.files["events"].write(f"{timestamp},{event},{safe_note}\n")
+        self.files["events"].write(f"{timestamp},{safe_event},{safe_note}\n")
 
     def close(self) -> None:
         for file_obj in self.files.values():
