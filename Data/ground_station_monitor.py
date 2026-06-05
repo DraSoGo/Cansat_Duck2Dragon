@@ -809,8 +809,13 @@ class GroundStationMonitorApp(tk.Tk):
         self.port_packets[source].append(packet)
         self.port_packets[source] = self.port_packets[source][-300:]
         previous_selected = self.merge_buffer.selected.get(packet.millis)
+        if previous_selected is None:
+            previous_selected = self._find_merged_log_packet(packet.millis)
         selected = self.merge_buffer.add(packet)
         self._update_port_view(source, packet)
+        if previous_selected is not None and selected is not packet and MergeBuffer._is_better(packet, previous_selected):
+            self.merge_buffer.selected[packet.millis] = packet
+            selected = packet
         if selected is not packet:
             return
         if previous_selected is None:
@@ -867,6 +872,12 @@ class GroundStationMonitorApp(tk.Tk):
                 self.merged_packets[index] = packet
                 return True
         return False
+
+    def _find_merged_log_packet(self, millis: int) -> Optional[TelemetryPacket]:
+        for packet in self.merged_log_packets:
+            if packet.millis == millis:
+                return packet
+        return None
 
     def _update_merge_view(self, display_packet: Optional[TelemetryPacket] = None, rebuild_tree: bool = False) -> None:
         if not self.merged_packets:

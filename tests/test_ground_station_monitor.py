@@ -815,6 +815,34 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(rows_by_millis[1]["source"], "port2")
         self.assertEqual(rows_by_millis[1]["rssi"], "-50")
 
+    def test_replacement_after_merge_buffer_trim_preserves_full_deduped_log(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        app = self.make_app()
+        app.log_writer = self.monitor.LogWriter(pathlib.Path(temp_dir.name), session_id="session")
+        merged_path = pathlib.Path(temp_dir.name) / "session_merged.csv"
+
+        app.port_states["port1"].record_link(-80, 10.0)
+        for millis in range(2001):
+            app._handle_line("port1", self.packet_line(millis=millis), arrival_time=1000.0 + millis)
+
+        self.assertNotIn(0, app.merge_buffer.selected)
+        self.assertEqual(app.merged_count, 2001)
+
+        app.port_states["port2"].record_link(-50, 10.0)
+        app._handle_line("port2", self.packet_line(millis=0), arrival_time=4000.0)
+
+        self.assertEqual(app.merged_count, 2001)
+        self.assertEqual(app.merge_buffer.selected[0].source, "port2")
+        self.assertEqual(app.merge_buffer.selected[0].rssi, -50)
+
+        log_rows = self.merged_log_rows(merged_path)
+        self.assertEqual(len(log_rows), 2001)
+        rows_for_zero = [row for row in log_rows if row["millis"] == "0"]
+        self.assertEqual(len(rows_for_zero), 1)
+        self.assertEqual(rows_for_zero[0]["source"], "port2")
+        self.assertEqual(rows_for_zero[0]["rssi"], "-50")
+
     def test_old_generation_line_after_reconnect_is_ignored(self):
         app = self.make_app()
 
