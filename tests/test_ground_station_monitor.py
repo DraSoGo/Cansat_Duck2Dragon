@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 import pathlib
 import tempfile
@@ -196,13 +197,17 @@ class LogWriterTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("# session start "))
         self.assertEqual(lines[1], "timestamp,event,note")
 
-    def test_event_log_sanitizes_event_and_note_newlines(self):
+    def test_event_log_writes_valid_csv_for_special_characters(self):
         with tempfile.TemporaryDirectory() as tmp:
             writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
-            writer.write_event("drop\nline\rbreak", "note\nline\rbreak")
+            writer.write_event('drop,\n"line"\rbreak', 'note,\n"line"\rbreak')
             writer.close()
 
-            lines = (pathlib.Path(tmp) / "session_events.csv").read_text().splitlines()
+            with (pathlib.Path(tmp) / "session_events.csv").open(newline="") as file_obj:
+                rows = list(csv.reader(file_obj))
 
-        self.assertEqual(len(lines), 3)
-        self.assertTrue(lines[2].endswith(",drop line break,note line break"))
+        self.assertEqual(rows[1], ["timestamp", "event", "note"])
+        self.assertEqual(len(rows[2]), 3)
+        self.assertNotEqual(rows[2][0], "")
+        self.assertEqual(rows[2][1], 'drop, "line" break')
+        self.assertEqual(rows[2][2], 'note, "line" break')

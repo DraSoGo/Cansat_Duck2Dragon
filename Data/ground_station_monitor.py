@@ -208,7 +208,7 @@ class LogWriter:
         self._write_headers()
 
     def _open(self, suffix: str):
-        return open(self.log_dir / f"{self.session_id}_{suffix}.csv", "a", buffering=1)
+        return open(self.log_dir / f"{self.session_id}_{suffix}.csv", "a", buffering=1, newline="")
 
     def _write_headers(self) -> None:
         started = datetime.now().isoformat(timespec="seconds")
@@ -235,7 +235,7 @@ class LogWriter:
         timestamp = datetime.now().isoformat(timespec="seconds")
         safe_event = event.replace("\n", " ").replace("\r", " ")
         safe_note = note.replace("\n", " ").replace("\r", " ")
-        self.files["events"].write(f"{timestamp},{safe_event},{safe_note}\n")
+        csv.writer(self.files["events"]).writerow([timestamp, safe_event, safe_note])
 
     def close(self) -> None:
         for file_obj in self.files.values():
