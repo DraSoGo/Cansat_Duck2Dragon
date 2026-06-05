@@ -7,9 +7,11 @@ import queue
 import re
 import threading
 import time
+import tkinter as tk
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from tkinter import filedialog, ttk
 from typing import Callable, Iterable, Optional
 
 
@@ -400,6 +402,14 @@ def default_serial_factory(port: str, baud: int, timeout: float):
     return serial.Serial(port, baud, timeout=timeout)
 
 
+def list_serial_ports() -> list[str]:
+    try:
+        from serial.tools import list_ports
+    except Exception:
+        return []
+    return [port.device for port in sorted(list_ports.comports())]
+
+
 class SerialReader:
     def __init__(
         self,
@@ -514,8 +524,278 @@ class SerialReader:
         self._close_serial()
 
 
+class GroundStationMonitorApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Duck2Dragon Monitor")
+        self.geometry("1280x820")
+        self.event_queue: queue.Queue = queue.Queue()
+        self.port_states = {"port1": PortState("port1"), "port2": PortState("port2")}
+        self.merge_buffer = MergeBuffer()
+        self.log_writer: Optional[LogWriter] = None
+        self.readers: dict[str, SerialReader] = {}
+        self.reader_threads: list[threading.Thread] = []
+        self.replay_readers: list[ReplayReader] = []
+        self.session_started = time.time()
+        self.merged_count = 0
+        self.event_markers: list[tuple[str, float]] = []
+        self.merged_packets: list[TelemetryPacket] = []
+        self.port_packets = {"port1": [], "port2": []}
+        self._build_ui()
+        self.after(100, self._drain_events)
+
+    def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        self._build_controls()
+        self._build_tabs()
+
+    def _build_controls(self) -> None:
+        frame = ttk.Frame(self, padding=8)
+        frame.grid(row=0, column=0, sticky="ew")
+        for index in range(12):
+            frame.columnconfigure(index, weight=0)
+        frame.columnconfigure(11, weight=1)
+
+        self.port_vars = {
+            "port1": tk.StringVar(value=DEFAULT_PORT_1),
+            "port2": tk.StringVar(value=DEFAULT_PORT_2),
+        }
+        self.baud_vars = {
+            "port1": tk.StringVar(value=str(DEFAULT_BAUD)),
+            "port2": tk.StringVar(value=str(DEFAULT_BAUD)),
+        }
+        self.status_vars = {
+            "port1": tk.StringVar(value="offline"),
+            "port2": tk.StringVar(value="offline"),
+        }
+        self.summary_var = tk.StringVar(value="Idle")
+
+        ttk.Label(frame, text="Port 1").grid(row=0, column=0, padx=4)
+        self.port1_combo = ttk.Combobox(frame, textvariable=self.port_vars["port1"], width=18)
+        self.port1_combo.grid(row=0, column=1, padx=4)
+        ttk.Entry(frame, textvariable=self.baud_vars["port1"], width=8).grid(row=0, column=2, padx=4)
+        ttk.Button(frame, text="Connect 1", command=lambda: self._connect_port("port1")).grid(row=0, column=3, padx=4)
+        ttk.Label(frame, textvariable=self.status_vars["port1"]).grid(row=0, column=4, padx=4)
+
+        ttk.Label(frame, text="Port 2").grid(row=0, column=5, padx=4)
+        self.port2_combo = ttk.Combobox(frame, textvariable=self.port_vars["port2"], width=18)
+        self.port2_combo.grid(row=0, column=6, padx=4)
+        ttk.Entry(frame, textvariable=self.baud_vars["port2"], width=8).grid(row=0, column=7, padx=4)
+        ttk.Button(frame, text="Connect 2", command=lambda: self._connect_port("port2")).grid(row=0, column=8, padx=4)
+        ttk.Label(frame, textvariable=self.status_vars["port2"]).grid(row=0, column=9, padx=4)
+
+        ttk.Button(frame, text="Refresh Ports", command=self._refresh_ports).grid(row=0, column=10, padx=4)
+        ttk.Button(frame, text="Start Logging", command=self._start_logging).grid(row=0, column=11, padx=4, sticky="w")
+        ttk.Button(frame, text="Replay Log", command=self._choose_replay_file).grid(row=0, column=12, padx=4)
+        ttk.Label(frame, textvariable=self.summary_var).grid(row=0, column=13, padx=8, sticky="e")
+        self._refresh_ports()
+
+    def _build_tabs(self) -> None:
+        self.tabs = ttk.Notebook(self)
+        self.tabs.grid(row=1, column=0, sticky="nsew")
+        self.merge_tab = ttk.Frame(self.tabs, padding=8)
+        self.port_tabs = {
+            "port1": ttk.Frame(self.tabs, padding=8),
+            "port2": ttk.Frame(self.tabs, padding=8),
+        }
+        self.tabs.add(self.merge_tab, text="Merge Data")
+        self.tabs.add(self.port_tabs["port1"], text="Port 1")
+        self.tabs.add(self.port_tabs["port2"], text="Port 2")
+        self._build_merge_tab()
+        self._build_port_tab("port1")
+        self._build_port_tab("port2")
+
+    def _build_merge_tab(self) -> None:
+        self.merge_tab.columnconfigure(0, weight=2)
+        self.merge_tab.columnconfigure(1, weight=1)
+        self.merge_tab.rowconfigure(1, weight=1)
+        self.merge_status_var = tk.StringVar(value="No merged packets")
+        ttk.Label(self.merge_tab, textvariable=self.merge_status_var, font=("TkDefaultFont", 12, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8)
+        )
+        self.map_placeholder = ttk.LabelFrame(self.merge_tab, text="Offline GPS Track")
+        self.map_placeholder.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        ttk.Label(self.map_placeholder, text="Chart added in Task 8").pack(expand=True)
+        side = ttk.Frame(self.merge_tab)
+        side.grid(row=1, column=1, sticky="nsew")
+        self.readout_var = tk.StringVar(value="Lat/Lon: --\nSats: --\nVoltage: --\nRSSI: --")
+        ttk.Label(side, textvariable=self.readout_var, justify="left").pack(anchor="w")
+        event_frame = ttk.LabelFrame(side, text="Timeline Events")
+        event_frame.pack(fill="x", pady=8)
+        for label in ("Launch", "Apogee", "Deployment", "Landing"):
+            ttk.Button(event_frame, text=label, command=lambda name=label: self._record_event(name)).pack(
+                side="left", padx=2, pady=4
+            )
+        self.merged_tree = self._make_tree(side, ("millis", "source", "alt_baro", "voltage", "rssi"))
+        self.merged_tree.pack(fill="both", expand=True, pady=8)
+
+    def _build_port_tab(self, source: str) -> None:
+        tab = self.port_tabs[source]
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)
+        status = tk.StringVar(value="No data")
+        setattr(self, f"{source}_detail_var", status)
+        ttk.Label(tab, textvariable=status, justify="left").grid(row=0, column=0, sticky="ew")
+        chart_box = ttk.LabelFrame(tab, text="Charts")
+        chart_box.grid(row=1, column=0, sticky="ew", pady=8)
+        ttk.Label(chart_box, text="Charts added in Task 8").pack()
+        tree = self._make_tree(tab, ("millis", "alt_baro", "voltage", "rssi", "snr"))
+        tree.grid(row=2, column=0, sticky="nsew")
+        setattr(self, f"{source}_tree", tree)
+
+    def _make_tree(self, parent, columns: tuple[str, ...]) -> ttk.Treeview:
+        tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
+        for column in columns:
+            tree.heading(column, text=column)
+            tree.column(column, width=90, anchor="center")
+        return tree
+
+    def _refresh_ports(self) -> None:
+        ports = list_serial_ports()
+        values = ports or [DEFAULT_PORT_1, DEFAULT_PORT_2]
+        self.port1_combo["values"] = values
+        self.port2_combo["values"] = values
+
+    def _start_logging(self) -> None:
+        if self.log_writer is None:
+            self.log_writer = LogWriter()
+            self.summary_var.set(f"Logging to {self.log_writer.log_dir}")
+
+    def _connect_port(self, source: str) -> None:
+        self._start_logging()
+        port = self.port_vars[source].get().strip()
+        baud = int(self.baud_vars[source].get().strip())
+        reader = SerialReader(source, port, baud, self.event_queue)
+        self.readers[source] = reader
+        self.reader_threads.append(reader.start())
+
+    def _choose_replay_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Choose replay log",
+            initialdir=str(DATA_DIR),
+            filetypes=[("CSV and log files", "*.csv *.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self._start_logging()
+        reader = ReplayReader(Path(path), "port1", self.event_queue)
+        self.replay_readers.append(reader)
+        reader.start()
+
+    def _record_event(self, name: str) -> None:
+        timestamp = time.time()
+        self.event_markers.append((name, timestamp))
+        if self.log_writer is not None:
+            self.log_writer.write_event(name)
+        self.summary_var.set(f"Event: {name}")
+
+    def _drain_events(self) -> None:
+        while True:
+            try:
+                event = self.event_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._handle_event(event)
+        self._update_summary()
+        self.after(100, self._drain_events)
+
+    def _handle_event(self, event: dict) -> None:
+        event_type = event.get("type")
+        source = event.get("source")
+        if event_type == "status" and source in self.port_states:
+            state = self.port_states[source]
+            state.record_status(event.get("status", "offline"), event.get("message", ""))
+            self.status_vars[source].set(state.status)
+            return
+        if event_type == "line" and source in self.port_states:
+            self._handle_line(source, event["line"], event.get("arrival_time", time.time()))
+
+    def _handle_line(self, source: str, line: str, arrival_time: float) -> None:
+        state = self.port_states[source]
+        state.record_raw(line, arrival_time)
+        if self.log_writer is not None:
+            self.log_writer.write_raw(source, line)
+        if line.startswith("#"):
+            rssi, snr = TelemetryParser.parse_link_comment(line)
+            state.record_link(rssi, snr)
+            return
+        try:
+            packet = TelemetryParser.parse_packet(line, source, state.latest_rssi, state.latest_snr, arrival_time)
+        except ValueError:
+            state.record_malformed(line)
+            return
+        state.record_packet(packet)
+        self.port_packets[source].append(packet)
+        self.port_packets[source] = self.port_packets[source][-300:]
+        selected = self.merge_buffer.add(packet)
+        if selected is packet:
+            self.merged_count += 1
+            self.merged_packets.append(packet)
+            self.merged_packets = self.merged_packets[-300:]
+            if self.log_writer is not None:
+                self.log_writer.write_merged(packet)
+        self._update_port_view(source)
+        self._update_merge_view()
+
+    def _update_port_view(self, source: str) -> None:
+        state = self.port_states[source]
+        packet = state.latest_packet
+        detail_var = getattr(self, f"{source}_detail_var")
+        if packet is None:
+            detail_var.set(f"{source}: {state.status}\nPackets: 0\nMalformed: {state.malformed_count}")
+            return
+        detail_var.set(
+            f"{source}: {state.status}\n"
+            f"Packets: {state.packet_count}  Malformed: {state.malformed_count}\n"
+            f"Alt: {packet.alt_baro:.2f} m  Voltage: {packet.voltage:.3f} V  "
+            f"RSSI: {packet.rssi if packet.rssi is not None else '--'}"
+        )
+        tree = getattr(self, f"{source}_tree")
+        tree.insert("", 0, values=(packet.millis, f"{packet.alt_baro:.2f}", f"{packet.voltage:.3f}", packet.rssi, packet.snr))
+        while len(tree.get_children()) > 200:
+            tree.delete(tree.get_children()[-1])
+
+    def _update_merge_view(self) -> None:
+        if not self.merged_packets:
+            return
+        packet = self.merged_packets[-1]
+        alerts = evaluate_alerts(packet)
+        self.merge_status_var.set(f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}")
+        self.readout_var.set(
+            f"Lat/Lon: {packet.lat:.6f}, {packet.lon:.6f}\n"
+            f"Sats: {packet.sats}\n"
+            f"Voltage: {packet.voltage:.3f} V\n"
+            f"RSSI: {packet.rssi if packet.rssi is not None else '--'}"
+        )
+        self.merged_tree.insert(
+            "",
+            0,
+            values=(packet.millis, packet.source, f"{packet.alt_baro:.2f}", f"{packet.voltage:.3f}", packet.rssi),
+        )
+        while len(self.merged_tree.get_children()) > 200:
+            self.merged_tree.delete(self.merged_tree.get_children()[-1])
+
+    def _update_summary(self) -> None:
+        elapsed = int(time.time() - self.session_started)
+        p1 = self.port_states["port1"].packet_count
+        p2 = self.port_states["port2"].packet_count
+        malformed = self.port_states["port1"].malformed_count + self.port_states["port2"].malformed_count
+        self.summary_var.set(f"{elapsed}s  P1={p1}  P2={p2}  merged={self.merged_count}  malformed={malformed}")
+
+    def destroy(self) -> None:
+        for reader in self.readers.values():
+            reader.stop()
+        for reader in self.replay_readers:
+            reader.stop()
+        if self.log_writer is not None:
+            self.log_writer.close()
+        super().destroy()
+
+
 def main() -> int:
-    print("Duck2Dragon Monitor parser module loaded.")
+    app = GroundStationMonitorApp()
+    app.mainloop()
     return 0
 
 
