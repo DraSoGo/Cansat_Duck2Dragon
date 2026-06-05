@@ -606,6 +606,12 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app = self.make_app()
 
         class DummyLogWriter:
+            def write_raw(self, source, line):
+                pass
+
+            def write_merged(self, packet):
+                pass
+
             def close(self):
                 pass
 
@@ -677,3 +683,89 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(len(app.merged_packets), 1)
         self.assertEqual(len(app.merged_tree.get_children()), 1)
         self.assertEqual(app.merge_buffer.selected[200].source, "port1")
+
+    def test_old_generation_line_after_reconnect_is_ignored(self):
+        app = self.make_app()
+
+        class DummyLogWriter:
+            def write_raw(self, source, line):
+                pass
+
+            def write_merged(self, packet):
+                pass
+
+            def close(self):
+                pass
+
+        class FakeThread:
+            def is_alive(self):
+                return False
+
+        class FakeSerialReader:
+            instances = []
+
+            def __init__(self, source, port, baud, event_queue):
+                self.source = source
+                self.event_queue = event_queue
+                self.stopped = False
+                self.instances.append(self)
+
+            def start(self):
+                return FakeThread()
+
+            def stop(self):
+                self.stopped = True
+
+        original_reader = self.monitor.SerialReader
+        self.addCleanup(setattr, self.monitor, "SerialReader", original_reader)
+        self.monitor.SerialReader = FakeSerialReader
+        app.log_writer = DummyLogWriter()
+
+        app._connect_port("port1")
+        old_reader = FakeSerialReader.instances[0]
+        app._connect_port("port1")
+        new_reader = FakeSerialReader.instances[1]
+
+        old_reader.event_queue.put({
+            "type": "line",
+            "source": "port1",
+            "line": self.packet_line(millis=300),
+            "arrival_time": 1000.0,
+        })
+        stale_event = app.event_queue.get_nowait()
+        app._handle_event(stale_event)
+
+        self.assertEqual(app.port_states["port1"].packet_count, 0)
+        self.assertEqual(app.merged_count, 0)
+        self.assertEqual(len(app.merged_tree.get_children()), 0)
+        self.assertTrue(old_reader.stopped)
+
+        new_reader.event_queue.put({
+            "type": "line",
+            "source": "port1",
+            "line": self.packet_line(millis=300),
+            "arrival_time": 1000.1,
+        })
+        current_event = app.event_queue.get_nowait()
+        app._handle_event(current_event)
+
+        self.assertEqual(app.port_states["port1"].packet_count, 1)
+        self.assertEqual(app.merged_count, 1)
+        self.assertEqual(len(app.merged_tree.get_children()), 1)
+
+    def test_malformed_lines_do_not_duplicate_previous_port_row(self):
+        app = self.make_app()
+
+        app._handle_line("port1", self.packet_line(millis=400), arrival_time=1000.0)
+        tree = app.port1_tree
+
+        self.assertEqual(app.port_states["port1"].packet_count, 1)
+        self.assertEqual(len(tree.get_children()), 1)
+
+        app._handle_line("port1", "bad,line", arrival_time=1000.1)
+        app._handle_line("port1", "still,bad", arrival_time=1000.2)
+
+        self.assertEqual(app.port_states["port1"].packet_count, 1)
+        self.assertEqual(app.port_states["port1"].malformed_count, 2)
+        self.assertEqual(len(tree.get_children()), 1)
+        self.assertIn("Malformed: 2", app.port1_detail_var.get())

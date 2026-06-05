@@ -524,6 +524,18 @@ class SerialReader:
         self._close_serial()
 
 
+class SerialEventQueue:
+    def __init__(self, event_queue: queue.Queue, generation: int):
+        self.event_queue = event_queue
+        self.generation = generation
+
+    def put(self, event: dict, *args, **kwargs) -> None:
+        tagged_event = dict(event)
+        tagged_event["generation"] = self.generation
+        tagged_event.setdefault("mode", "serial")
+        self.event_queue.put(tagged_event, *args, **kwargs)
+
+
 class GroundStationMonitorApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -536,6 +548,8 @@ class GroundStationMonitorApp(tk.Tk):
         self.readers: dict[str, SerialReader] = {}
         self.reader_threads: dict[str, threading.Thread] = {}
         self.replay_readers: list[ReplayReader] = []
+        self.replay_threads: list[threading.Thread] = []
+        self.reader_generations = {"port1": 0, "port2": 0}
         self.session_started = time.time()
         self.merged_count = 0
         self.event_markers: list[tuple[str, float]] = []
@@ -670,9 +684,11 @@ class GroundStationMonitorApp(tk.Tk):
             self.status_vars[source].set("invalid baud")
             self.summary_var.set(f"{source}: invalid baud")
             return
+        self.reader_generations[source] += 1
+        generation = self.reader_generations[source]
         self._stop_reader(source)
         self._start_logging()
-        reader = SerialReader(source, port, baud, self.event_queue)
+        reader = SerialReader(source, port, baud, SerialEventQueue(self.event_queue, generation))
         self.readers[source] = reader
         self.reader_threads[source] = reader.start()
 
@@ -706,7 +722,7 @@ class GroundStationMonitorApp(tk.Tk):
         self._start_logging()
         reader = ReplayReader(Path(path), "port1", self.event_queue)
         self.replay_readers.append(reader)
-        reader.start()
+        self.replay_threads.append(reader.start())
 
     def _record_event(self, name: str) -> None:
         timestamp = time.time()
@@ -728,6 +744,8 @@ class GroundStationMonitorApp(tk.Tk):
     def _handle_event(self, event: dict) -> None:
         event_type = event.get("type")
         source = event.get("source")
+        if source in self.port_states and not self._is_current_serial_event(source, event):
+            return
         if event_type == "status" and source in self.port_states:
             state = self.port_states[source]
             status = event.get("status", "offline")
@@ -737,6 +755,12 @@ class GroundStationMonitorApp(tk.Tk):
             return
         if event_type == "line" and source in self.port_states:
             self._handle_line(source, event["line"], event.get("arrival_time", time.time()))
+
+    def _is_current_serial_event(self, source: str, event: dict) -> bool:
+        generation = event.get("generation")
+        if generation is None:
+            return True
+        return generation == self.reader_generations[source]
 
     def _handle_line(self, source: str, line: str, arrival_time: float) -> None:
         state = self.port_states[source]
@@ -757,7 +781,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.port_packets[source].append(packet)
         self.port_packets[source] = self.port_packets[source][-300:]
         selected = self.merge_buffer.add(packet)
-        self._update_port_view(source)
+        self._update_port_view(source, packet)
         if selected is packet:
             self.merged_count += 1
             self.merged_packets.append(packet)
@@ -766,7 +790,7 @@ class GroundStationMonitorApp(tk.Tk):
                 self.log_writer.write_merged(packet)
             self._update_merge_view()
 
-    def _update_port_view(self, source: str) -> None:
+    def _update_port_view(self, source: str, packet_for_row: Optional[TelemetryPacket] = None) -> None:
         state = self.port_states[source]
         packet = state.latest_packet
         detail_var = getattr(self, f"{source}_detail_var")
@@ -779,10 +803,21 @@ class GroundStationMonitorApp(tk.Tk):
             f"Alt: {packet.alt_baro:.2f} m  Voltage: {packet.voltage:.3f} V  "
             f"RSSI: {packet.rssi if packet.rssi is not None else '--'}"
         )
-        tree = getattr(self, f"{source}_tree")
-        tree.insert("", 0, values=(packet.millis, f"{packet.alt_baro:.2f}", f"{packet.voltage:.3f}", packet.rssi, packet.snr))
-        while len(tree.get_children()) > 200:
-            tree.delete(tree.get_children()[-1])
+        if packet_for_row is not None:
+            tree = getattr(self, f"{source}_tree")
+            tree.insert(
+                "",
+                0,
+                values=(
+                    packet_for_row.millis,
+                    f"{packet_for_row.alt_baro:.2f}",
+                    f"{packet_for_row.voltage:.3f}",
+                    packet_for_row.rssi,
+                    packet_for_row.snr,
+                ),
+            )
+            while len(tree.get_children()) > 200:
+                tree.delete(tree.get_children()[-1])
 
     def _update_merge_view(self) -> None:
         if not self.merged_packets:
@@ -817,6 +852,8 @@ class GroundStationMonitorApp(tk.Tk):
         for reader in self.replay_readers:
             reader.stop()
         for thread in list(self.reader_threads.values()):
+            self._join_reader_thread(thread)
+        for thread in self.replay_threads:
             self._join_reader_thread(thread)
         if self.log_writer is not None:
             self.log_writer.close()
