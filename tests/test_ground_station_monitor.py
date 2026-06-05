@@ -351,8 +351,9 @@ class ReplayReaderTests(unittest.TestCase):
 
 
 class FakeSerial:
-    def __init__(self, lines):
+    def __init__(self, lines, close_error=None):
         self.lines = list(lines)
+        self.close_error = close_error
         self.closed = False
 
     def readline(self):
@@ -365,6 +366,18 @@ class FakeSerial:
 
     def close(self):
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class StopThenRaiseSerial(FakeSerial):
+    def __init__(self, stop_event):
+        super().__init__([])
+        self.stop_event = stop_event
+
+    def readline(self):
+        self.stop_event.set()
+        raise OSError("closed during stop")
 
 
 class SerialReaderTests(unittest.TestCase):
@@ -411,3 +424,51 @@ class SerialReaderTests(unittest.TestCase):
         self.assertEqual(event["type"], "status")
         self.assertEqual(event["source"], "port2")
         self.assertEqual(event["status"], "reconnecting")
+
+    def test_serial_reader_suppresses_reconnecting_after_stop(self):
+        events = queue.Queue()
+        reader = self.monitor.SerialReader(
+            source="port1",
+            port="/dev/fake",
+            baud=115200,
+            event_queue=events,
+            serial_factory=lambda port, baud, timeout: None,
+            reconnect_delay=0.01,
+        )
+        fake = StopThenRaiseSerial(reader.stop_event)
+        reader.serial_obj = fake
+
+        reader._read_loop()
+
+        self.assertTrue(fake.closed)
+        self.assertTrue(events.empty())
+
+    def test_serial_reader_close_errors_do_not_escape_stop_or_cleanup(self):
+        events = queue.Queue()
+        stop_fake = FakeSerial([], close_error=OSError("close failed"))
+        reader = self.monitor.SerialReader(
+            source="port1",
+            port="/dev/fake",
+            baud=115200,
+            event_queue=events,
+            serial_factory=lambda port, baud, timeout: stop_fake,
+            reconnect_delay=0.01,
+        )
+        reader.serial_obj = stop_fake
+
+        reader.stop()
+
+        cleanup_fake = FakeSerial([b"\r\n"], close_error=OSError("close failed"))
+        cleanup_reader = self.monitor.SerialReader(
+            source="port1",
+            port="/dev/fake",
+            baud=115200,
+            event_queue=events,
+            serial_factory=lambda port, baud, timeout: cleanup_fake,
+            reconnect_delay=0.01,
+        )
+
+        cleanup_reader.run_once_for_test()
+
+        self.assertTrue(stop_fake.closed)
+        self.assertTrue(cleanup_fake.closed)
