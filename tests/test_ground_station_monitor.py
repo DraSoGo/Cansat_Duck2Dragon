@@ -699,6 +699,20 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["voltage"][1].lines), 1)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["rssi"][1].lines), 1)
 
+    def test_merge_link_chart_refreshes_for_non_selected_duplicate_packets(self):
+        app = self.make_app(charts=True)
+
+        app.port_states["port1"].record_link(-50, 9.0)
+        app._handle_line("port1", self.packet_line(millis=1), arrival_time=1000.0)
+        self.assertEqual([line.get_label() for line in app.link_ax.lines], ["Port 1"])
+
+        app.port_states["port2"].record_link(-80, 8.0)
+        app._handle_line("port2", self.packet_line(millis=1), arrival_time=1001.0)
+
+        self.assertEqual(app.merged_count, 1)
+        self.assertEqual(app.merge_buffer.selected[1].source, "port1")
+        self.assertEqual([line.get_label() for line in app.link_ax.lines], ["Port 1", "Port 2"])
+
     def test_replay_file_uses_speed_control_and_resets_invalid_speed(self):
         app = self.make_app()
         replay_path = ROOT / "Data" / "sample_replay.csv"

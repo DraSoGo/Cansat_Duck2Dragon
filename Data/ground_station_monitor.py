@@ -869,6 +869,7 @@ class GroundStationMonitorApp(tk.Tk):
             selected = self.merge_buffer.add(packet)
         self._update_port_view(source, packet)
         if selected is not packet:
+            self._refresh_merge_charts()
             return
         if previous_selected is None:
             self.merged_count += 1
