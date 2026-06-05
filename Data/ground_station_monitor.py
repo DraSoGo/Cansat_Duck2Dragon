@@ -811,11 +811,15 @@ class GroundStationMonitorApp(tk.Tk):
         previous_selected = self.merge_buffer.selected.get(packet.millis)
         if previous_selected is None:
             previous_selected = self._find_merged_log_packet(packet.millis)
-        selected = self.merge_buffer.add(packet)
+        if previous_selected is not None:
+            if MergeBuffer._is_better(packet, previous_selected):
+                self.merge_buffer.selected[packet.millis] = packet
+                selected = packet
+            else:
+                selected = previous_selected
+        else:
+            selected = self.merge_buffer.add(packet)
         self._update_port_view(source, packet)
-        if previous_selected is not None and selected is not packet and MergeBuffer._is_better(packet, previous_selected):
-            self.merge_buffer.selected[packet.millis] = packet
-            selected = packet
         if selected is not packet:
             return
         if previous_selected is None:
