@@ -813,8 +813,7 @@ class GroundStationMonitorApp(tk.Tk):
             previous_selected = self._find_merged_log_packet(packet.millis)
         if previous_selected is not None:
             if MergeBuffer._is_better(packet, previous_selected):
-                self.merge_buffer.selected[packet.millis] = packet
-                selected = packet
+                selected = self.merge_buffer.add(packet)
             else:
                 selected = previous_selected
         else:

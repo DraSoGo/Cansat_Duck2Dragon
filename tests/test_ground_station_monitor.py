@@ -843,6 +843,26 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(rows_for_zero[0]["source"], "port2")
         self.assertEqual(rows_for_zero[0]["rssi"], "-50")
 
+    def test_stronger_duplicates_after_merge_buffer_trim_do_not_grow_selected_unbounded(self):
+        app = self.make_app()
+
+        app.port_states["port1"].record_link(-80, 10.0)
+        for millis in range(3000):
+            app._handle_line("port1", self.packet_line(millis=millis), arrival_time=1000.0 + millis)
+
+        self.assertEqual(len(app.merge_buffer.selected), app.merge_buffer.max_packets)
+
+        app.port_states["port2"].record_link(-50, 10.0)
+        for millis in range(1000):
+            app._handle_line("port2", self.packet_line(millis=millis), arrival_time=5000.0 + millis)
+
+        self.assertLessEqual(len(app.merge_buffer.selected), app.merge_buffer.max_packets)
+        self.assertEqual(app.merged_count, 3000)
+        rows_for_trimmed_duplicates = [
+            packet for packet in app.merged_log_packets if packet.millis < 1000 and packet.source == "port2"
+        ]
+        self.assertEqual(len(rows_for_trimmed_duplicates), 1000)
+
     def test_weaker_duplicate_after_merge_buffer_trim_keeps_full_log_selection(self):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
