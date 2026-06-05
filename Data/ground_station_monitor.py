@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Duck2Dragon Monitor - Tkinter dual-LoRa ground station dashboard."""
+
+import csv
+import math
+import queue
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Iterable, Optional
+
+
+CSV_HEADER = (
+    "millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,"
+    "ax,ay,az,gx,gy,gz,qw,qx,qy,qz,"
+    "high_ax,high_ay,high_az,voltage,current,watt"
+)
+CSV_FIELDS = CSV_HEADER.split(",")
+CSV_FIELD_COUNT = len(CSV_FIELDS)
+DEFAULT_BAUD = 115200
+DEFAULT_PORT_1 = "/dev/ttyACM0"
+DEFAULT_PORT_2 = "/dev/ttyUSB0"
+DATA_DIR = Path(__file__).resolve().parent
+LOG_DIR = DATA_DIR / "logs"
+
+
+@dataclass(frozen=True)
+class TelemetryPacket:
+    raw_line: str
+    source: str
+    arrival_time: float
+    rssi: Optional[int]
+    snr: Optional[float]
+    millis: int
+    lat: float
+    lon: float
+    alt_gps: float
+    sats: int
+    alt_baro: float
+    temp: float
+    pressure: float
+    ax: float
+    ay: float
+    az: float
+    gx: float
+    gy: float
+    gz: float
+    qw: float
+    qx: float
+    qy: float
+    qz: float
+    high_ax: float
+    high_ay: float
+    high_az: float
+    voltage: float
+    current: float
+    watt: float
+
+    @property
+    def gps_valid(self) -> bool:
+        return self.sats > 0 and not (self.lat == 0.0 and self.lon == 0.0)
+
+    @property
+    def accel_mag(self) -> float:
+        return math.sqrt(self.ax * self.ax + self.ay * self.ay + self.az * self.az)
+
+    def csv_values(self) -> list[str]:
+        return [
+            str(self.millis),
+            f"{self.lat:.6f}",
+            f"{self.lon:.6f}",
+            f"{self.alt_gps:.2f}",
+            str(self.sats),
+            f"{self.alt_baro:.2f}",
+            f"{self.temp:.2f}",
+            f"{self.pressure:.2f}",
+            f"{self.ax:.4f}",
+            f"{self.ay:.4f}",
+            f"{self.az:.4f}",
+            f"{self.gx:.4f}",
+            f"{self.gy:.4f}",
+            f"{self.gz:.4f}",
+            f"{self.qw:.4f}",
+            f"{self.qx:.4f}",
+            f"{self.qy:.4f}",
+            f"{self.qz:.4f}",
+            f"{self.high_ax:.2f}",
+            f"{self.high_ay:.2f}",
+            f"{self.high_az:.2f}",
+            f"{self.voltage:.3f}",
+            f"{self.current:.3f}",
+            f"{self.watt:.3f}",
+        ]
+
+
+class TelemetryParser:
+    LINK_RE = re.compile(r"RSSI=(-?\d+)\s+SNR=(-?\d+(?:\.\d+)?)")
+
+    @staticmethod
+    def parse_link_comment(line: str) -> tuple[Optional[int], Optional[float]]:
+        match = TelemetryParser.LINK_RE.search(line)
+        if not match:
+            return None, None
+        return int(match.group(1)), float(match.group(2))
+
+    @staticmethod
+    def parse_packet(
+        line: str,
+        source: str,
+        rssi: Optional[int],
+        snr: Optional[float],
+        arrival_time: Optional[float] = None,
+    ) -> TelemetryPacket:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != CSV_FIELD_COUNT:
+            raise ValueError(f"expected 24 fields, got {len(parts)}")
+
+        try:
+            values = {
+                "millis": int(parts[0]),
+                "lat": float(parts[1]),
+                "lon": float(parts[2]),
+                "alt_gps": float(parts[3]),
+                "sats": int(float(parts[4])),
+                "alt_baro": float(parts[5]),
+                "temp": float(parts[6]),
+                "pressure": float(parts[7]),
+                "ax": float(parts[8]),
+                "ay": float(parts[9]),
+                "az": float(parts[10]),
+                "gx": float(parts[11]),
+                "gy": float(parts[12]),
+                "gz": float(parts[13]),
+                "qw": float(parts[14]),
+                "qx": float(parts[15]),
+                "qy": float(parts[16]),
+                "qz": float(parts[17]),
+                "high_ax": float(parts[18]),
+                "high_ay": float(parts[19]),
+                "high_az": float(parts[20]),
+                "voltage": float(parts[21]),
+                "current": float(parts[22]),
+                "watt": float(parts[23]),
+            }
+        except ValueError as exc:
+            raise ValueError(f"invalid numeric field: {exc}") from exc
+
+        return TelemetryPacket(
+            raw_line=line,
+            source=source,
+            arrival_time=time.time() if arrival_time is None else arrival_time,
+            rssi=rssi,
+            snr=snr,
+            **values,
+        )
+
+
+def main() -> int:
+    print("Duck2Dragon Monitor parser module loaded.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
