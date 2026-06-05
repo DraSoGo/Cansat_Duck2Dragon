@@ -579,6 +579,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.reader_threads: dict[str, threading.Thread] = {}
         self.replay_readers: list[ReplayReader] = []
         self.replay_threads: list[threading.Thread] = []
+        self.replay_paused = False
         self.reader_generations = {"port1": 0, "port2": 0}
         self.session_started = time.time()
         self.merged_count = 0
@@ -616,6 +617,7 @@ class GroundStationMonitorApp(tk.Tk):
         }
         self.summary_var = tk.StringVar(value="Idle")
         self.replay_speed_var = tk.StringVar(value="1.0")
+        self.replay_pause_var = tk.StringVar(value="Pause Replay")
 
         ttk.Label(frame, text="Port 1").grid(row=0, column=0, padx=4)
         self.port1_combo = ttk.Combobox(frame, textvariable=self.port_vars["port1"], width=18)
@@ -637,6 +639,14 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Label(frame, textvariable=self.summary_var).grid(row=0, column=13, padx=8, sticky="e")
         ttk.Label(frame, text="Replay x").grid(row=0, column=14, padx=2)
         ttk.Entry(frame, textvariable=self.replay_speed_var, width=5).grid(row=0, column=15, padx=2)
+        self.replay_pause_button = ttk.Button(
+            frame,
+            textvariable=self.replay_pause_var,
+            command=self._toggle_replay_pause,
+        )
+        self.replay_pause_button.grid(row=0, column=16, padx=2)
+        self.replay_stop_button = ttk.Button(frame, text="Stop Replay", command=self._stop_replay)
+        self.replay_stop_button.grid(row=0, column=17, padx=2)
         self._refresh_ports()
 
     def _build_tabs(self) -> None:
@@ -688,10 +698,14 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Label(side, textvariable=self.readout_var, justify="left").pack(anchor="w")
         event_frame = ttk.LabelFrame(side, text="Timeline Events")
         event_frame.pack(fill="x", pady=8)
+        event_buttons = ttk.Frame(event_frame)
+        event_buttons.pack(fill="x")
         for label in ("Launch", "Apogee", "Deployment", "Landing"):
-            ttk.Button(event_frame, text=label, command=lambda name=label: self._record_event(name)).pack(
+            ttk.Button(event_buttons, text=label, command=lambda name=label: self._record_event(name)).pack(
                 side="left", padx=2, pady=4
             )
+        self.timeline_tree = self._make_tree(event_frame, ("time", "event"), height=4)
+        self.timeline_tree.pack(fill="x", pady=(0, 4))
         self.merged_tree = self._make_tree(side, ("millis", "source", "alt_baro", "voltage", "rssi"))
         self.merged_tree.pack(fill="both", expand=True, pady=8)
 
@@ -730,8 +744,8 @@ class GroundStationMonitorApp(tk.Tk):
         canvas.get_tk_widget().pack(fill="both", expand=True)
         return figure, axis, canvas
 
-    def _make_tree(self, parent, columns: tuple[str, ...]) -> ttk.Treeview:
-        tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
+    def _make_tree(self, parent, columns: tuple[str, ...], height: int = 12) -> ttk.Treeview:
+        tree = ttk.Treeview(parent, columns=columns, show="headings", height=height)
         for column in columns:
             tree.heading(column, text=column)
             tree.column(column, width=90, anchor="center")
@@ -800,10 +814,47 @@ class GroundStationMonitorApp(tk.Tk):
         reader = ReplayReader(Path(path), "port1", self.event_queue, speed=speed)
         self.replay_readers.append(reader)
         self.replay_threads.append(reader.start())
+        self.replay_paused = False
+        self.replay_pause_var.set("Pause Replay")
+
+    def _toggle_replay_pause(self) -> None:
+        if not self.replay_readers:
+            self.summary_var.set("No replay active")
+            return
+        if self.replay_paused:
+            for reader in self.replay_readers:
+                reader.resume()
+            self.replay_paused = False
+            self.replay_pause_var.set("Pause Replay")
+            self.summary_var.set("Replay resumed")
+            return
+        for reader in self.replay_readers:
+            reader.pause()
+        self.replay_paused = True
+        self.replay_pause_var.set("Resume Replay")
+        self.summary_var.set("Replay paused")
+
+    def _stop_replay(self) -> None:
+        if not self.replay_readers:
+            self.summary_var.set("No replay active")
+            return
+        for reader in self.replay_readers:
+            reader.stop()
+        for thread in self.replay_threads:
+            self._join_reader_thread(thread)
+        self.replay_readers.clear()
+        self.replay_threads.clear()
+        self.replay_paused = False
+        self.replay_pause_var.set("Pause Replay")
+        self.summary_var.set("Replay stopped")
 
     def _record_event(self, name: str) -> None:
         timestamp = time.time()
         self.event_markers.append((name, timestamp))
+        stamp = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+        self.timeline_tree.insert("", 0, values=(stamp, name))
+        while len(self.timeline_tree.get_children()) > 20:
+            self.timeline_tree.delete(self.timeline_tree.get_children()[-1])
         if self.log_writer is not None:
             self.log_writer.write_event(name)
         self.summary_var.set(f"Event: {name}")
@@ -886,18 +937,31 @@ class GroundStationMonitorApp(tk.Tk):
         if replaced_visible_packet:
             self._update_merge_view(display_packet=packet, rebuild_tree=True)
 
-    def _update_port_view(self, source: str, packet_for_row: Optional[TelemetryPacket] = None) -> None:
+    def _update_port_view(
+        self,
+        source: str,
+        packet_for_row: Optional[TelemetryPacket] = None,
+        now: Optional[float] = None,
+        refresh_charts: bool = True,
+    ) -> None:
         state = self.port_states[source]
         packet = state.latest_packet
         detail_var = getattr(self, f"{source}_detail_var")
+        alerts_text = ", ".join(sorted(evaluate_port_alerts(state, now))) or "none"
         if packet is None:
-            detail_var.set(f"{source}: {state.status}\nPackets: 0\nMalformed: {state.malformed_count}")
+            detail_var.set(
+                f"{source}: {state.status}\n"
+                f"Packets: 0\n"
+                f"Malformed: {state.malformed_count}\n"
+                f"Alerts: {alerts_text}"
+            )
             return
         detail_var.set(
             f"{source}: {state.status}\n"
             f"Packets: {state.packet_count}  Malformed: {state.malformed_count}\n"
             f"Alt: {packet.alt_baro:.2f} m  Voltage: {packet.voltage:.3f} V  "
-            f"RSSI: {packet.rssi if packet.rssi is not None else '--'}"
+            f"RSSI: {packet.rssi if packet.rssi is not None else '--'}\n"
+            f"Alerts: {alerts_text}"
         )
         if packet_for_row is not None:
             tree = getattr(self, f"{source}_tree")
@@ -914,7 +978,8 @@ class GroundStationMonitorApp(tk.Tk):
             )
             while len(tree.get_children()) > 200:
                 tree.delete(tree.get_children()[-1])
-        self._refresh_port_charts(source)
+        if refresh_charts:
+            self._refresh_port_charts(source)
 
     def _replace_merged_packet(self, packet: TelemetryPacket) -> bool:
         for index, existing in enumerate(self.merged_log_packets):
@@ -1028,12 +1093,21 @@ class GroundStationMonitorApp(tk.Tk):
                 axis.plot(values)
             canvas.draw_idle()
 
-    def _update_summary(self) -> None:
-        elapsed = int(time.time() - self.session_started)
+    def _update_summary(self, now: Optional[float] = None) -> None:
+        current_time = time.time() if now is None else now
+        elapsed = int(current_time - self.session_started)
         p1 = self.port_states["port1"].packet_count
         p2 = self.port_states["port2"].packet_count
         malformed = self.port_states["port1"].malformed_count + self.port_states["port2"].malformed_count
         self.summary_var.set(f"{elapsed}s  P1={p1}  P2={p2}  merged={self.merged_count}  malformed={malformed}")
+        for source in self.port_states:
+            self._update_port_view(source, now=current_time, refresh_charts=False)
+        if self.merged_packets:
+            packet = self.merged_packets[-1]
+            alerts = evaluate_alerts(packet, current_time)
+            self.merge_status_var.set(
+                f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}"
+            )
 
     def destroy(self) -> None:
         for source in list(self.readers):

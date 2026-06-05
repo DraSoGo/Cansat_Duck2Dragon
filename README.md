@@ -128,10 +128,10 @@ Same LoRa pins as CanSat, except `LORA_RST = GPIO 23`.
 
 ## Telemetry CSV format
 
-Each LoRa packet and SD log line is one comma-separated record terminated with `\n`. All packets share the same fixed 23-field schema.
+Each LoRa packet and SD log line is one comma-separated record terminated with `\n`. All packets share the same fixed 24-field schema.
 
 ```
-millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current
+millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt
 ```
 
 | Idx | Field      | Unit  | Source        |
@@ -159,6 +159,7 @@ millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz
 | 20  | high_az    | g     | ADXL375       |
 | 21  | voltage    | V     | INA219 bus V  |
 | 22  | current    | mA    | INA219        |
+| 23  | watt       | W     | INA219        |
 
 Lines starting with `#` are metadata (boot markers, RSSI/SNR, session timestamps) and may be discarded by analysis tools.
 

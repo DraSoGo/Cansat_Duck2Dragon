@@ -73,6 +73,15 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result, (None, None))
 
 
+class DocumentationTests(unittest.TestCase):
+    def test_readme_documents_current_24_field_schema(self):
+        readme = (ROOT / "README.md").read_text()
+
+        self.assertIn("fixed 24-field schema", readme)
+        self.assertIn("voltage,current,watt", readme)
+        self.assertIn("| 23  | watt", readme)
+
+
 class MergeBufferTests(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
@@ -730,13 +739,23 @@ class GroundStationMonitorAppTests(unittest.TestCase):
                 self.event_queue = event_queue
                 self.speed = speed
                 self.delay_func = delay_func
+                self.paused = False
+                self.stopped = False
+                self.resume_count = 0
                 self.instances.append(self)
 
             def start(self):
                 return object()
 
+            def pause(self):
+                self.paused = True
+
+            def resume(self):
+                self.paused = False
+                self.resume_count += 1
+
             def stop(self):
-                pass
+                self.stopped = True
 
         original_reader = self.monitor.ReplayReader
         original_dialog = self.monitor.filedialog.askopenfilename
@@ -755,6 +774,49 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app._choose_replay_file()
         self.assertEqual(FakeReplayReader.instances[-1].speed, 1.0)
         self.assertEqual(app.replay_speed_var.get(), "1.0")
+
+        self.assertTrue(app.replay_pause_button.winfo_exists())
+        self.assertTrue(app.replay_stop_button.winfo_exists())
+
+        app._toggle_replay_pause()
+        self.assertTrue(app.replay_paused)
+        self.assertEqual(app.replay_pause_var.get(), "Resume Replay")
+        self.assertTrue(all(reader.paused for reader in FakeReplayReader.instances))
+
+        app._toggle_replay_pause()
+        self.assertFalse(app.replay_paused)
+        self.assertEqual(app.replay_pause_var.get(), "Pause Replay")
+        self.assertTrue(all(reader.resume_count == 1 for reader in FakeReplayReader.instances))
+
+        app._stop_replay()
+        self.assertEqual(app.replay_readers, [])
+        self.assertEqual(app.replay_threads, [])
+        self.assertTrue(all(reader.stopped for reader in FakeReplayReader.instances))
+
+    def test_port_alerts_and_stale_alerts_are_visible_in_dashboard(self):
+        app = self.make_app()
+
+        app.port_states["port1"].record_link(-50, 10.0)
+        app._handle_line("port1", self.packet_line(millis=10), arrival_time=1000.0)
+        for index in range(self.monitor.MALFORMED_BURST_THRESHOLD):
+            app._handle_line("port1", f"bad,line,{index}", arrival_time=1001.0 + index)
+
+        app._update_port_view("port1", now=1002.0)
+        self.assertIn("malformed_burst", app.port1_detail_var.get())
+
+        app._update_summary(now=1000.0 + self.monitor.STALE_PACKET_SECONDS + 1.0)
+        self.assertIn("stale_packet", app.port1_detail_var.get())
+        self.assertIn("stale_packet", app.merge_status_var.get())
+
+    def test_manual_events_are_rendered_in_timeline(self):
+        app = self.make_app()
+
+        app._record_event("Launch")
+
+        rows = app.timeline_tree.get_children()
+        self.assertEqual(len(rows), 1)
+        values = app.timeline_tree.item(rows[0], "values")
+        self.assertEqual(values[1], "Launch")
 
     def test_lower_rssi_duplicate_does_not_insert_another_merged_row(self):
         app = self.make_app()
