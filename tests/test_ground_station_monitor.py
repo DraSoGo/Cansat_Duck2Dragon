@@ -550,3 +550,27 @@ class StateAndAlertTests(unittest.TestCase):
         self.assertIn("weak_rssi", alerts)
         self.assertIn("no_gps_lock", alerts)
         self.assertIn("stale_packet", alerts)
+
+    def test_alerts_none_packet_reports_no_packet(self):
+        self.assertEqual(self.monitor.evaluate_alerts(None), {"no_packet"})
+
+    def test_alerts_healthy_packet_returns_empty_set(self):
+        alerts = self.monitor.evaluate_alerts(self.packet(), now=1002.0)
+
+        self.assertEqual(alerts, set())
+
+    def test_alerts_missing_rssi_does_not_flag_weak_rssi(self):
+        alerts = self.monitor.evaluate_alerts(self.packet(rssi=None), now=1002.0)
+
+        self.assertNotIn("weak_rssi", alerts)
+
+    def test_port_alerts_flag_malformed_burst(self):
+        state = self.monitor.PortState("port1")
+        state.record_packet(self.packet())
+        for _ in range(self.monitor.MALFORMED_BURST_THRESHOLD):
+            state.record_malformed("bad,line", arrival_time=1001.0)
+
+        alerts = self.monitor.evaluate_port_alerts(state, now=1002.0)
+
+        self.assertIn("malformed_burst", alerts)
+        self.assertEqual(state.last_seen_time, 1001.0)

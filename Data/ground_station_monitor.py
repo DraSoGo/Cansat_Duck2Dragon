@@ -136,10 +136,12 @@ class PortState:
         self.recent_malformed = 0
         self.last_seen_time = packet.arrival_time
 
-    def record_malformed(self, line: str) -> None:
+    def record_malformed(self, line: str, arrival_time: Optional[float] = None) -> None:
         self.latest_raw_line = line
         self.malformed_count += 1
         self.recent_malformed += 1
+        if arrival_time is not None:
+            self.last_seen_time = arrival_time
 
 
 def evaluate_alerts(packet: Optional[TelemetryPacket], now: Optional[float] = None) -> set[str]:
@@ -156,6 +158,13 @@ def evaluate_alerts(packet: Optional[TelemetryPacket], now: Optional[float] = No
         alerts.add("no_gps_lock")
     if current_time - packet.arrival_time > STALE_PACKET_SECONDS:
         alerts.add("stale_packet")
+    return alerts
+
+
+def evaluate_port_alerts(state: PortState, now: Optional[float] = None) -> set[str]:
+    alerts = evaluate_alerts(state.latest_packet, now)
+    if state.recent_malformed >= MALFORMED_BURST_THRESHOLD:
+        alerts.add("malformed_burst")
     return alerts
 
 
