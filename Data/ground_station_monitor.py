@@ -194,6 +194,52 @@ class MergeBuffer:
             self.selected.pop(oldest, None)
 
 
+class LogWriter:
+    def __init__(self, log_dir: Path = LOG_DIR, session_id: Optional[str] = None):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.session_id = session_id or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.files = {
+            "port1": self._open("port1"),
+            "port2": self._open("port2"),
+            "merged": self._open("merged"),
+            "events": self._open("events"),
+        }
+        self._write_headers()
+
+    def _open(self, suffix: str):
+        return open(self.log_dir / f"{self.session_id}_{suffix}.csv", "a", buffering=1)
+
+    def _write_headers(self) -> None:
+        started = datetime.now().isoformat(timespec="seconds")
+        for source in ("port1", "port2"):
+            self.files[source].write(f"# session start {started}\n")
+            self.files[source].write(f"# {CSV_HEADER}\n")
+        self.files["merged"].write(f"# session start {started}\n")
+        self.files["merged"].write(f"{CSV_HEADER},source,rssi,snr\n")
+        self.files["events"].write("timestamp,event,note\n")
+
+    def write_raw(self, source: str, line: str) -> None:
+        if source not in ("port1", "port2"):
+            raise ValueError(f"invalid raw log source: {source}")
+        self.files[source].write(line.rstrip("\r\n") + "\n")
+
+    def write_merged(self, packet: TelemetryPacket) -> None:
+        rssi = "" if packet.rssi is None else str(packet.rssi)
+        snr = "" if packet.snr is None else f"{packet.snr:.2f}"
+        row = packet.csv_values() + [packet.source, rssi, snr]
+        self.files["merged"].write(",".join(row) + "\n")
+
+    def write_event(self, event: str, note: str = "") -> None:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        safe_note = note.replace("\n", " ").replace("\r", " ")
+        self.files["events"].write(f"{timestamp},{event},{safe_note}\n")
+
+    def close(self) -> None:
+        for file_obj in self.files.values():
+            file_obj.close()
+
+
 def main() -> int:
     print("Duck2Dragon Monitor parser module loaded.")
     return 0

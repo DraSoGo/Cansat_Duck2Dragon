@@ -132,3 +132,56 @@ class MergeBufferTests(unittest.TestCase):
         selected = buffer.add(second)
 
         self.assertIs(selected, first)
+
+
+class LogWriterTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def packet(self):
+        line = (
+            "128518,8.367500,100.043922,-1.80,12,56.02,24.98,1006.54,"
+            "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.684,-90.500,-0.333"
+        )
+        return self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, 1000.0)
+
+    def test_log_writer_creates_four_session_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="2026-06-05_12-00-00")
+            writer.close()
+
+            names = sorted(path.name for path in pathlib.Path(tmp).iterdir())
+
+        self.assertEqual(
+            names,
+            [
+                "2026-06-05_12-00-00_events.csv",
+                "2026-06-05_12-00-00_merged.csv",
+                "2026-06-05_12-00-00_port1.csv",
+                "2026-06-05_12-00-00_port2.csv",
+            ],
+        )
+
+    def test_raw_log_preserves_malformed_and_comment_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
+            writer.write_raw("port1", "# RSSI=-61 SNR=11.75")
+            writer.write_raw("port1", "malformed,line")
+            writer.close()
+
+            text = (pathlib.Path(tmp) / "session_port1.csv").read_text()
+
+        self.assertIn("# RSSI=-61 SNR=11.75", text)
+        self.assertIn("malformed,line", text)
+
+    def test_merged_log_includes_source_and_link_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
+            writer.write_merged(self.packet())
+            writer.close()
+
+            text = (pathlib.Path(tmp) / "session_merged.csv").read_text()
+
+        self.assertIn("source,rssi,snr", text)
+        self.assertIn("port1,-61,11.75", text)
