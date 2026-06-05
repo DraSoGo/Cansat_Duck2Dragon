@@ -221,6 +221,16 @@ python3 read_serial.py /dev/ttyUSB0 9600     # custom port + baud
 
 All received lines are appended to `Data/log.txt`. Press `Ctrl+C` to stop.
 
+### Running the Tkinter ground station monitor
+
+```bash
+cd Data
+python3 -m pip install pyserial matplotlib
+python3 ground_station_monitor.py
+```
+
+The GUI is titled **Duck2Dragon Monitor**. It can read two serial ports at once, show `Merge Data`, `Port 1`, and `Port 2` tabs, save raw and merged logs under `Data/logs/`, and replay an existing log without connected hardware.
+
 ---
 
 ## Module-level testing

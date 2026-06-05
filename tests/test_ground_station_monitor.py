@@ -699,6 +699,49 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["voltage"][1].lines), 1)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["rssi"][1].lines), 1)
 
+    def test_replay_file_uses_speed_control_and_resets_invalid_speed(self):
+        app = self.make_app()
+        replay_path = ROOT / "Data" / "sample_replay.csv"
+
+        class DummyLogWriter:
+            def close(self):
+                pass
+
+        class FakeReplayReader:
+            instances = []
+
+            def __init__(self, path, source, event_queue, speed=1.0, delay_func=None):
+                self.path = path
+                self.source = source
+                self.event_queue = event_queue
+                self.speed = speed
+                self.delay_func = delay_func
+                self.instances.append(self)
+
+            def start(self):
+                return object()
+
+            def stop(self):
+                pass
+
+        original_reader = self.monitor.ReplayReader
+        original_dialog = self.monitor.filedialog.askopenfilename
+        self.addCleanup(setattr, self.monitor, "ReplayReader", original_reader)
+        self.addCleanup(setattr, self.monitor.filedialog, "askopenfilename", original_dialog)
+        self.monitor.ReplayReader = FakeReplayReader
+        self.monitor.filedialog.askopenfilename = lambda **_kwargs: str(replay_path)
+        app.log_writer = DummyLogWriter()
+
+        app.replay_speed_var.set("2.5")
+        app._choose_replay_file()
+        self.assertEqual(FakeReplayReader.instances[-1].path, replay_path)
+        self.assertEqual(FakeReplayReader.instances[-1].speed, 2.5)
+
+        app.replay_speed_var.set("bad")
+        app._choose_replay_file()
+        self.assertEqual(FakeReplayReader.instances[-1].speed, 1.0)
+        self.assertEqual(app.replay_speed_var.get(), "1.0")
+
     def test_lower_rssi_duplicate_does_not_insert_another_merged_row(self):
         app = self.make_app()
 

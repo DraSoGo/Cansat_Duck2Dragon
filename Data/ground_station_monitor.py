@@ -615,6 +615,7 @@ class GroundStationMonitorApp(tk.Tk):
             "port2": tk.StringVar(value="offline"),
         }
         self.summary_var = tk.StringVar(value="Idle")
+        self.replay_speed_var = tk.StringVar(value="1.0")
 
         ttk.Label(frame, text="Port 1").grid(row=0, column=0, padx=4)
         self.port1_combo = ttk.Combobox(frame, textvariable=self.port_vars["port1"], width=18)
@@ -634,6 +635,8 @@ class GroundStationMonitorApp(tk.Tk):
         ttk.Button(frame, text="Start Logging", command=self._start_logging).grid(row=0, column=11, padx=4, sticky="w")
         ttk.Button(frame, text="Replay Log", command=self._choose_replay_file).grid(row=0, column=12, padx=4)
         ttk.Label(frame, textvariable=self.summary_var).grid(row=0, column=13, padx=8, sticky="e")
+        ttk.Label(frame, text="Replay x").grid(row=0, column=14, padx=2)
+        ttk.Entry(frame, textvariable=self.replay_speed_var, width=5).grid(row=0, column=15, padx=2)
         self._refresh_ports()
 
     def _build_tabs(self) -> None:
@@ -789,7 +792,12 @@ class GroundStationMonitorApp(tk.Tk):
         if not path:
             return
         self._start_logging()
-        reader = ReplayReader(Path(path), "port1", self.event_queue)
+        try:
+            speed = float(self.replay_speed_var.get())
+        except ValueError:
+            speed = 1.0
+            self.replay_speed_var.set("1.0")
+        reader = ReplayReader(Path(path), "port1", self.event_queue, speed=speed)
         self.replay_readers.append(reader)
         self.replay_threads.append(reader.start())
 
