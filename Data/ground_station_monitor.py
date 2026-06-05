@@ -243,11 +243,19 @@ class LogWriter:
 
 
 class ReplayReader:
-    def __init__(self, path: Path, source: str, event_queue: queue.Queue, speed: float = 1.0):
+    def __init__(
+        self,
+        path: Path,
+        source: str,
+        event_queue: queue.Queue,
+        speed: float = 1.0,
+        sleep_func: Callable[[float], None] = time.sleep,
+    ):
         self.path = Path(path)
         self.source = source
         self.event_queue = event_queue
         self.speed = max(speed, 0.1)
+        self.sleep_func = sleep_func
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
 
@@ -258,16 +266,18 @@ class ReplayReader:
 
     def run(self) -> None:
         self.event_queue.put({"type": "status", "source": self.source, "status": "replay"})
-        last_emit = None
+        emitted = 0
         for line in self._iter_lines():
             if self.stop_event.is_set():
                 break
             while self.pause_event.is_set() and not self.stop_event.is_set():
-                time.sleep(0.05)
-            now = time.time()
-            if last_emit is not None:
-                time.sleep(min(0.5, (now - last_emit) / self.speed))
-            last_emit = time.time()
+                self.sleep_func(0.05)
+            if self.stop_event.is_set():
+                break
+            if emitted > 0:
+                self.sleep_func(self._line_delay())
+                if self.stop_event.is_set():
+                    break
             self.event_queue.put({
                 "type": "line",
                 "source": self.source,
@@ -275,6 +285,7 @@ class ReplayReader:
                 "arrival_time": time.time(),
                 "mode": "replay",
             })
+            emitted += 1
         self.event_queue.put({"type": "status", "source": self.source, "status": "replay_done"})
 
     def run_once_for_test(self) -> None:
@@ -293,6 +304,9 @@ class ReplayReader:
                 line = raw.rstrip("\r\n")
                 if line:
                     yield line
+
+    def _line_delay(self) -> float:
+        return min(0.5, max(0.005, 0.05 / self.speed))
 
     def stop(self) -> None:
         self.stop_event.set()

@@ -248,3 +248,58 @@ class ReplayReaderTests(unittest.TestCase):
 
         self.assertEqual(event["line"], "# boot")
         self.assertTrue(events.empty())
+
+    def test_replay_reader_stop_while_paused_emits_no_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sample.csv"
+            path.write_text("first\nsecond\n")
+            events = queue.Queue()
+
+            reader = self.monitor.ReplayReader(path, "port1", events)
+            reader.pause()
+            thread = reader.start()
+            status = events.get(timeout=1.0)
+            reader.stop()
+            thread.join(timeout=1.0)
+
+            remaining = [status]
+            while not events.empty():
+                remaining.append(events.get_nowait())
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(status["type"], "status")
+        self.assertEqual(status["status"], "replay")
+        self.assertEqual([event for event in remaining if event["type"] == "line"], [])
+
+    def test_replay_reader_speed_controls_requested_delay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sample.csv"
+            path.write_text("first\nsecond\nthird\n")
+
+            slow_sleeps = []
+            slow_events = queue.Queue()
+            slow_reader = self.monitor.ReplayReader(
+                path,
+                "port1",
+                slow_events,
+                speed=1.0,
+                sleep_func=slow_sleeps.append,
+            )
+            slow_reader.run()
+
+            fast_sleeps = []
+            fast_events = queue.Queue()
+            fast_reader = self.monitor.ReplayReader(
+                path,
+                "port1",
+                fast_events,
+                speed=5.0,
+                sleep_func=fast_sleeps.append,
+            )
+            fast_reader.run()
+
+        self.assertEqual(len(slow_sleeps), 2)
+        self.assertEqual(len(fast_sleeps), 2)
+        self.assertAlmostEqual(slow_sleeps[0], 0.05)
+        self.assertAlmostEqual(fast_sleeps[0], 0.01)
+        self.assertLess(fast_sleeps[0], slow_sleeps[0])
