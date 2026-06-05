@@ -723,6 +723,62 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(int(values[4]), -50)
         self.assertEqual(len(log_writer.merged), 1)
 
+    def test_non_tail_higher_rssi_duplicate_updates_replacement_readout(self):
+        app = self.make_app()
+
+        app.port_states["port1"].record_link(-80, 10.0)
+        app._handle_line("port1", self.packet_line(millis=100, voltage=3.7), arrival_time=1000.0)
+        app.port_states["port1"].record_link(-60, 10.0)
+        app._handle_line("port1", self.packet_line(millis=200, voltage=3.8), arrival_time=1000.1)
+
+        app.port_states["port2"].record_link(-50, 10.0)
+        app._handle_line("port2", self.packet_line(millis=100, voltage=3.9), arrival_time=1000.2)
+
+        selected = app.merge_buffer.selected[100]
+        self.assertEqual(app.merged_count, 2)
+        self.assertEqual(len(app.merged_packets), 2)
+        self.assertIs(app.merged_packets[0], selected)
+        self.assertEqual(selected.source, "port2")
+        self.assertEqual(selected.rssi, -50)
+        self.assertIn("Voltage: 3.900 V", app.readout_var.get())
+        self.assertIn("RSSI: -50", app.readout_var.get())
+
+        rows = app.merged_tree.get_children()
+        self.assertEqual(len(rows), 2)
+        values_by_millis = {
+            int(app.merged_tree.item(row, "values")[0]): app.merged_tree.item(row, "values")
+            for row in rows
+        }
+        self.assertEqual(values_by_millis[100][1], "port2")
+        self.assertEqual(int(values_by_millis[100][4]), -50)
+        self.assertEqual(values_by_millis[200][1], "port1")
+
+    def test_aged_out_higher_rssi_duplicate_does_not_reenter_display_list(self):
+        app = self.make_app()
+
+        app.port_states["port1"].record_link(-80, 10.0)
+        app._handle_line("port1", self.packet_line(millis=10), arrival_time=1000.0)
+        app.port_states["port1"].record_link(-60, 10.0)
+        app._handle_line("port1", self.packet_line(millis=20), arrival_time=1000.1)
+
+        visible_packet = app.merged_packets[-1]
+        app.merged_packets = [visible_packet]
+        app._update_merge_view(rebuild_tree=True)
+
+        app.port_states["port2"].record_link(-50, 10.0)
+        app._handle_line("port2", self.packet_line(millis=10), arrival_time=1000.2)
+
+        self.assertEqual(app.merge_buffer.selected[10].source, "port2")
+        self.assertEqual(app.merge_buffer.selected[10].rssi, -50)
+        self.assertEqual(app.merged_count, 2)
+        self.assertEqual(app.merged_packets, [visible_packet])
+
+        rows = app.merged_tree.get_children()
+        self.assertEqual(len(rows), 1)
+        values = app.merged_tree.item(rows[0], "values")
+        self.assertEqual(int(values[0]), 20)
+        self.assertEqual(values[1], "port1")
+
     def test_old_generation_line_after_reconnect_is_ignored(self):
         app = self.make_app()
 

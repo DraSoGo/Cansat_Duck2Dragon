@@ -793,8 +793,8 @@ class GroundStationMonitorApp(tk.Tk):
                 self.log_writer.write_merged(packet)
             self._update_merge_view()
             return
-        self._replace_merged_packet(packet)
-        self._update_merge_view(rebuild_tree=True)
+        if self._replace_merged_packet(packet):
+            self._update_merge_view(display_packet=packet, rebuild_tree=True)
 
     def _update_port_view(self, source: str, packet_for_row: Optional[TelemetryPacket] = None) -> None:
         state = self.port_states[source]
@@ -825,18 +825,17 @@ class GroundStationMonitorApp(tk.Tk):
             while len(tree.get_children()) > 200:
                 tree.delete(tree.get_children()[-1])
 
-    def _replace_merged_packet(self, packet: TelemetryPacket) -> None:
+    def _replace_merged_packet(self, packet: TelemetryPacket) -> bool:
         for index, existing in enumerate(self.merged_packets):
             if existing.millis == packet.millis:
                 self.merged_packets[index] = packet
-                return
-        self.merged_packets.append(packet)
-        self.merged_packets = self.merged_packets[-300:]
+                return True
+        return False
 
-    def _update_merge_view(self, rebuild_tree: bool = False) -> None:
+    def _update_merge_view(self, display_packet: Optional[TelemetryPacket] = None, rebuild_tree: bool = False) -> None:
         if not self.merged_packets:
             return
-        packet = self.merged_packets[-1]
+        packet = display_packet or self.merged_packets[-1]
         alerts = evaluate_alerts(packet)
         self.merge_status_var.set(f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}")
         self.readout_var.set(
@@ -848,8 +847,8 @@ class GroundStationMonitorApp(tk.Tk):
         if rebuild_tree:
             for item in self.merged_tree.get_children():
                 self.merged_tree.delete(item)
-            for packet in reversed(self.merged_packets[-200:]):
-                self._insert_merged_row(packet)
+            for merged_packet in self.merged_packets[-200:]:
+                self._insert_merged_row(merged_packet)
             return
         self._insert_merged_row(packet)
 
