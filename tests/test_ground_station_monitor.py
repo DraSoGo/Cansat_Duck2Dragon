@@ -1,6 +1,7 @@
 import csv
 import importlib.util
 import pathlib
+import queue
 import tempfile
 import time
 import unittest
@@ -211,3 +212,39 @@ class LogWriterTests(unittest.TestCase):
         self.assertNotEqual(rows[2][0], "")
         self.assertEqual(rows[2][1], 'drop, "line" break')
         self.assertEqual(rows[2][2], 'note, "line" break')
+
+
+class ReplayReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def test_replay_reader_emits_line_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sample.csv"
+            path.write_text("# RSSI=-61 SNR=11.75\n1,2,3\n")
+            events = queue.Queue()
+
+            reader = self.monitor.ReplayReader(path, "port1", events, speed=99.0)
+            reader.run_once_for_test()
+
+            first = events.get_nowait()
+            second = events.get_nowait()
+
+        self.assertEqual(first["type"], "line")
+        self.assertEqual(first["source"], "port1")
+        self.assertEqual(first["line"], "# RSSI=-61 SNR=11.75")
+        self.assertEqual(second["line"], "1,2,3")
+
+    def test_replay_reader_skip_empty_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sample.csv"
+            path.write_text("\n\n# boot\n")
+            events = queue.Queue()
+
+            reader = self.monitor.ReplayReader(path, "port2", events, speed=99.0)
+            reader.run_once_for_test()
+
+            event = events.get_nowait()
+
+        self.assertEqual(event["line"], "# boot")
+        self.assertTrue(events.empty())

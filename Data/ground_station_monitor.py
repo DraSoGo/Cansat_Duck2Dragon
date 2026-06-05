@@ -242,6 +242,68 @@ class LogWriter:
             file_obj.close()
 
 
+class ReplayReader:
+    def __init__(self, path: Path, source: str, event_queue: queue.Queue, speed: float = 1.0):
+        self.path = Path(path)
+        self.source = source
+        self.event_queue = event_queue
+        self.speed = max(speed, 0.1)
+        self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
+
+    def start(self) -> threading.Thread:
+        thread = threading.Thread(target=self.run, name=f"ReplayReader-{self.source}", daemon=True)
+        thread.start()
+        return thread
+
+    def run(self) -> None:
+        self.event_queue.put({"type": "status", "source": self.source, "status": "replay"})
+        last_emit = None
+        for line in self._iter_lines():
+            if self.stop_event.is_set():
+                break
+            while self.pause_event.is_set() and not self.stop_event.is_set():
+                time.sleep(0.05)
+            now = time.time()
+            if last_emit is not None:
+                time.sleep(min(0.5, (now - last_emit) / self.speed))
+            last_emit = time.time()
+            self.event_queue.put({
+                "type": "line",
+                "source": self.source,
+                "line": line,
+                "arrival_time": time.time(),
+                "mode": "replay",
+            })
+        self.event_queue.put({"type": "status", "source": self.source, "status": "replay_done"})
+
+    def run_once_for_test(self) -> None:
+        for line in self._iter_lines():
+            self.event_queue.put({
+                "type": "line",
+                "source": self.source,
+                "line": line,
+                "arrival_time": time.time(),
+                "mode": "replay",
+            })
+
+    def _iter_lines(self) -> Iterable[str]:
+        with open(self.path, "r", encoding="utf-8", errors="replace") as file_obj:
+            for raw in file_obj:
+                line = raw.rstrip("\r\n")
+                if line:
+                    yield line
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def pause(self) -> None:
+        self.pause_event.set()
+
+    def resume(self) -> None:
+        self.pause_event.clear()
+
+
 def main() -> int:
     print("Duck2Dragon Monitor parser module loaded.")
     return 0
