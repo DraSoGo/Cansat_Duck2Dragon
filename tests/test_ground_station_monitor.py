@@ -684,6 +684,45 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(len(app.merged_tree.get_children()), 1)
         self.assertEqual(app.merge_buffer.selected[200].source, "port1")
 
+    def test_higher_rssi_duplicate_replaces_existing_merged_row(self):
+        app = self.make_app()
+
+        class DummyLogWriter:
+            def __init__(self):
+                self.merged = []
+
+            def write_raw(self, source, line):
+                pass
+
+            def write_merged(self, packet):
+                self.merged.append(packet)
+
+            def close(self):
+                pass
+
+        log_writer = DummyLogWriter()
+        app.log_writer = log_writer
+
+        app.port_states["port1"].record_link(-80, 10.0)
+        app._handle_line("port1", self.packet_line(millis=250), arrival_time=1000.0)
+
+        app.port_states["port2"].record_link(-50, 10.0)
+        app._handle_line("port2", self.packet_line(millis=250), arrival_time=1000.1)
+
+        selected = app.merge_buffer.selected[250]
+        self.assertEqual(app.merged_count, 1)
+        self.assertEqual(len(app.merged_packets), 1)
+        self.assertIs(app.merged_packets[0], selected)
+        self.assertEqual(selected.source, "port2")
+        self.assertEqual(selected.rssi, -50)
+
+        rows = app.merged_tree.get_children()
+        self.assertEqual(len(rows), 1)
+        values = app.merged_tree.item(rows[0], "values")
+        self.assertEqual(values[1], "port2")
+        self.assertEqual(int(values[4]), -50)
+        self.assertEqual(len(log_writer.merged), 1)
+
     def test_old_generation_line_after_reconnect_is_ignored(self):
         app = self.make_app()
 

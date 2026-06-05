@@ -780,15 +780,21 @@ class GroundStationMonitorApp(tk.Tk):
         state.record_packet(packet)
         self.port_packets[source].append(packet)
         self.port_packets[source] = self.port_packets[source][-300:]
+        previous_selected = self.merge_buffer.selected.get(packet.millis)
         selected = self.merge_buffer.add(packet)
         self._update_port_view(source, packet)
-        if selected is packet:
+        if selected is not packet:
+            return
+        if previous_selected is None:
             self.merged_count += 1
             self.merged_packets.append(packet)
             self.merged_packets = self.merged_packets[-300:]
             if self.log_writer is not None:
                 self.log_writer.write_merged(packet)
             self._update_merge_view()
+            return
+        self._replace_merged_packet(packet)
+        self._update_merge_view(rebuild_tree=True)
 
     def _update_port_view(self, source: str, packet_for_row: Optional[TelemetryPacket] = None) -> None:
         state = self.port_states[source]
@@ -819,7 +825,15 @@ class GroundStationMonitorApp(tk.Tk):
             while len(tree.get_children()) > 200:
                 tree.delete(tree.get_children()[-1])
 
-    def _update_merge_view(self) -> None:
+    def _replace_merged_packet(self, packet: TelemetryPacket) -> None:
+        for index, existing in enumerate(self.merged_packets):
+            if existing.millis == packet.millis:
+                self.merged_packets[index] = packet
+                return
+        self.merged_packets.append(packet)
+        self.merged_packets = self.merged_packets[-300:]
+
+    def _update_merge_view(self, rebuild_tree: bool = False) -> None:
         if not self.merged_packets:
             return
         packet = self.merged_packets[-1]
@@ -831,6 +845,15 @@ class GroundStationMonitorApp(tk.Tk):
             f"Voltage: {packet.voltage:.3f} V\n"
             f"RSSI: {packet.rssi if packet.rssi is not None else '--'}"
         )
+        if rebuild_tree:
+            for item in self.merged_tree.get_children():
+                self.merged_tree.delete(item)
+            for packet in reversed(self.merged_packets[-200:]):
+                self._insert_merged_row(packet)
+            return
+        self._insert_merged_row(packet)
+
+    def _insert_merged_row(self, packet: TelemetryPacket) -> None:
         self.merged_tree.insert(
             "",
             0,
