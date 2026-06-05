@@ -312,15 +312,25 @@ class LogWriter:
         self.files["merged"].write(",".join(row) + "\n")
 
     def rewrite_merged(self, packets: Iterable[TelemetryPacket]) -> None:
-        self.files["merged"].close()
-        with open(self._path("merged"), "w", newline="") as file_obj:
+        merged_path = self._path("merged")
+        tmp_path = merged_path.with_suffix(merged_path.suffix + ".tmp")
+        with open(tmp_path, "w", newline="") as file_obj:
             self._write_merged_header(file_obj)
             for packet in packets:
                 rssi = "" if packet.rssi is None else str(packet.rssi)
                 snr = "" if packet.snr is None else f"{packet.snr:.2f}"
                 row = packet.csv_values() + [packet.source, rssi, snr]
                 file_obj.write(",".join(row) + "\n")
-        self.files["merged"] = self._open("merged")
+        self.files["merged"].close()
+        try:
+            tmp_path.replace(merged_path)
+        finally:
+            self.files["merged"] = self._open("merged")
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def write_event(self, event: str, note: str = "") -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
@@ -570,6 +580,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.session_started = time.time()
         self.merged_count = 0
         self.event_markers: list[tuple[str, float]] = []
+        self.merged_log_packets: list[TelemetryPacket] = []
         self.merged_packets: list[TelemetryPacket] = []
         self.port_packets = {"port1": [], "port2": []}
         self._build_ui()
@@ -804,15 +815,17 @@ class GroundStationMonitorApp(tk.Tk):
             return
         if previous_selected is None:
             self.merged_count += 1
+            self.merged_log_packets.append(packet)
             self.merged_packets.append(packet)
             self.merged_packets = self.merged_packets[-300:]
             if self.log_writer is not None:
                 self.log_writer.write_merged(packet)
             self._update_merge_view()
             return
-        if self._replace_merged_packet(packet):
-            if self.log_writer is not None:
-                self.log_writer.rewrite_merged(self.merged_packets)
+        replaced_visible_packet = self._replace_merged_packet(packet)
+        if self.log_writer is not None:
+            self.log_writer.rewrite_merged(self.merged_log_packets)
+        if replaced_visible_packet:
             self._update_merge_view(display_packet=packet, rebuild_tree=True)
 
     def _update_port_view(self, source: str, packet_for_row: Optional[TelemetryPacket] = None) -> None:
@@ -845,6 +858,10 @@ class GroundStationMonitorApp(tk.Tk):
                 tree.delete(tree.get_children()[-1])
 
     def _replace_merged_packet(self, packet: TelemetryPacket) -> bool:
+        for index, existing in enumerate(self.merged_log_packets):
+            if existing.millis == packet.millis:
+                self.merged_log_packets[index] = packet
+                break
         for index, existing in enumerate(self.merged_packets):
             if existing.millis == packet.millis:
                 self.merged_packets[index] = packet

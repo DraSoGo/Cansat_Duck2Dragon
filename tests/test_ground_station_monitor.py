@@ -755,7 +755,11 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(values_by_millis[200][1], "port1")
 
     def test_aged_out_higher_rssi_duplicate_does_not_reenter_display_list(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
         app = self.make_app()
+        app.log_writer = self.monitor.LogWriter(pathlib.Path(temp_dir.name), session_id="session")
+        merged_path = pathlib.Path(temp_dir.name) / "session_merged.csv"
 
         app.port_states["port1"].record_link(-80, 10.0)
         app._handle_line("port1", self.packet_line(millis=10), arrival_time=1000.0)
@@ -779,6 +783,37 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         values = app.merged_tree.item(rows[0], "values")
         self.assertEqual(int(values[0]), 20)
         self.assertEqual(values[1], "port1")
+
+        log_rows = self.merged_log_rows(merged_path)
+        rows_by_millis = {row["millis"]: row for row in log_rows}
+        self.assertEqual(rows_by_millis["10"]["source"], "port2")
+        self.assertEqual(rows_by_millis["10"]["rssi"], "-50")
+        self.assertEqual(rows_by_millis["20"]["source"], "port1")
+
+    def test_replacement_after_display_cap_preserves_full_merged_log(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        app = self.make_app()
+        app.log_writer = self.monitor.LogWriter(pathlib.Path(temp_dir.name), session_id="session")
+        merged_path = pathlib.Path(temp_dir.name) / "session_merged.csv"
+
+        app.port_states["port1"].record_link(-80, 10.0)
+        for millis in range(301):
+            app._handle_line("port1", self.packet_line(millis=millis), arrival_time=1000.0 + millis)
+
+        self.assertEqual(app.merged_count, 301)
+        self.assertEqual(len(app.merged_packets), 300)
+        self.assertNotIn(0, [packet.millis for packet in app.merged_packets])
+
+        app.port_states["port2"].record_link(-50, 10.0)
+        app._handle_line("port2", self.packet_line(millis=1), arrival_time=1400.0)
+
+        log_rows = self.merged_log_rows(merged_path)
+        self.assertEqual(len(log_rows), 301)
+        rows_by_millis = {int(row["millis"]): row for row in log_rows}
+        self.assertIn(0, rows_by_millis)
+        self.assertEqual(rows_by_millis[1]["source"], "port2")
+        self.assertEqual(rows_by_millis[1]["rssi"], "-50")
 
     def test_old_generation_line_after_reconnect_is_ignored(self):
         app = self.make_app()
