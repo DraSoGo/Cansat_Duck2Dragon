@@ -5,7 +5,7 @@ import csv
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -480,3 +480,44 @@ def packet_has_default_orientation(packet: TelemetryPacket) -> bool:
     if not np.all(np.isfinite(quaternion)):
         return True
     return bool(np.linalg.norm(quaternion - np.array([1.0, 0.0, 0.0, 0.0], dtype=float)) <= ORIENTATION_IDENTITY_EPS)
+
+
+@dataclass
+class ApogeeDetector:
+    window_size: int = 5
+    descent_threshold: float = -2.0
+    alt_history: list = field(default_factory=list)
+    apogee_detected: bool = False
+    apogee_time: Optional[float] = None
+    apogee_altitude: Optional[float] = None
+
+    def update(self, packet: TelemetryPacket) -> bool:
+        """Return True if apogee just detected."""
+        if self.apogee_detected or not math.isfinite(packet.alt_baro):
+            return False
+
+        self.alt_history.append((packet.arrival_time, packet.alt_baro))
+
+        if len(self.alt_history) > self.window_size:
+            self.alt_history.pop(0)
+
+        if len(self.alt_history) < self.window_size:
+            return False
+
+        time_span = self.alt_history[-1][0] - self.alt_history[0][0]
+        if time_span < 0.1:
+            return False
+
+        alt_change = self.alt_history[-1][1] - self.alt_history[0][1]
+        velocity = alt_change / time_span
+
+        if velocity < self.descent_threshold:
+            max_alt = max(alt for _, alt in self.alt_history)
+            max_idx = [i for i, (_, alt) in enumerate(self.alt_history) if alt == max_alt][0]
+
+            self.apogee_detected = True
+            self.apogee_time = self.alt_history[max_idx][0]
+            self.apogee_altitude = max_alt
+            return True
+
+        return False
