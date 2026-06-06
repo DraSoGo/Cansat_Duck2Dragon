@@ -422,3 +422,61 @@ class LogWriter:
     def close(self) -> None:
         for file_obj in self.files.values():
             file_obj.close()
+
+
+def quaternion_rotation_matrix(quaternion) -> 'np.ndarray':
+    import numpy as np
+    w, x, y, z = quaternion
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=float,
+    )
+
+
+def rotation_euler_degrees(rotation) -> tuple[float, float, float]:
+    pitch_sin = -float(rotation[2, 0])
+    pitch_sin = min(1.0, max(-1.0, pitch_sin))
+    pitch = math.asin(pitch_sin)
+    if abs(math.cos(pitch)) > 1e-6:
+        roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+        yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
+    else:
+        roll = 0.0
+        yaw = math.atan2(-float(rotation[0, 1]), float(rotation[1, 1]))
+    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+
+
+def orientation_label(axis) -> tuple[str, float]:
+    vertical_component = min(1.0, max(-1.0, abs(float(axis[2]))))
+    tilt_degrees = math.degrees(math.acos(vertical_component))
+    if tilt_degrees <= ORIENTATION_VERTICAL_DEGREES:
+        label = "Vertical"
+    elif tilt_degrees >= ORIENTATION_HORIZONTAL_DEGREES:
+        label = "Horizontal"
+    else:
+        label = "Tilted"
+    return label, tilt_degrees
+
+
+def packet_orientation_rotation(packet: TelemetryPacket) -> tuple:
+    import numpy as np
+    quaternion = np.array([packet.qw, packet.qx, packet.qy, packet.qz], dtype=float)
+    if np.all(np.isfinite(quaternion)):
+        norm = np.linalg.norm(quaternion)
+        if norm > 0.01:
+            rotation = quaternion_rotation_matrix(quaternion / norm)
+            if np.all(np.isfinite(rotation)):
+                return rotation, "quat"
+    return np.identity(3), "unknown"
+
+
+def packet_has_default_orientation(packet: TelemetryPacket) -> bool:
+    import numpy as np
+    quaternion = np.array([packet.qw, packet.qx, packet.qy, packet.qz], dtype=float)
+    if not np.all(np.isfinite(quaternion)):
+        return True
+    return bool(np.linalg.norm(quaternion - np.array([1.0, 0.0, 0.0, 0.0], dtype=float)) <= ORIENTATION_IDENTITY_EPS)
