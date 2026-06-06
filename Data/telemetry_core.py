@@ -38,6 +38,10 @@ ORIENTATION_VERTICAL_DEGREES = 25.0
 ORIENTATION_HORIZONTAL_DEGREES = 65.0
 ORIENTATION_IDENTITY_EPS = 1e-4
 
+# Directory paths
+DATA_DIR = Path(__file__).resolve().parent
+LOG_DIR = DATA_DIR / "logs"
+
 
 @dataclass
 class AlertConfig:
@@ -338,3 +342,83 @@ class MergeBuffer:
         while len(self.history) > self.max_packets:
             oldest = self.history.pop(0)
             self.selected.pop(oldest, None)
+
+
+class LogWriter:
+    def __init__(self, log_dir: Path = LOG_DIR, session_id: Optional[str] = None):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.session_id = session_id or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.started = datetime.now().isoformat(timespec="seconds")
+        self.files = {
+            "port1": self._open("port1"),
+            "port2": self._open("port2"),
+            "merged": self._open("merged"),
+            "events": self._open("events"),
+        }
+        self._write_headers()
+
+    def _open(self, suffix: str):
+        return open(self.log_dir / f"{self.session_id}_{suffix}.csv", "a", buffering=1, newline="")
+
+    def _path(self, suffix: str) -> Path:
+        return self.log_dir / f"{self.session_id}_{suffix}.csv"
+
+    def _write_headers(self) -> None:
+        for source in ("port1", "port2"):
+            self.files[source].write(f"# session start {self.started}\n")
+            self.files[source].write(f"{RAW_LOG_HEADER}\n")
+        self._write_merged_header(self.files["merged"])
+        self.files["events"].write(f"# session start {self.started}\n")
+        self.files["events"].write("timestamp,event,note\n")
+
+    def _write_merged_header(self, file_obj) -> None:
+        file_obj.write(f"# session start {self.started}\n")
+        file_obj.write(f"{MERGED_LOG_HEADER}\n")
+
+    def write_raw(self, source: str, line: str, arrival_time: Optional[float] = None) -> None:
+        if source not in ("port1", "port2"):
+            raise ValueError(f"invalid raw log source: {source}")
+        csv.writer(self.files[source]).writerow([self._format_log_time(arrival_time), line.rstrip("\r\n")])
+
+    def write_merged(self, packet: TelemetryPacket) -> None:
+        csv.writer(self.files["merged"]).writerow(self._merged_row(packet))
+
+    def rewrite_merged(self, packets: Iterable[TelemetryPacket]) -> None:
+        merged_path = self._path("merged")
+        tmp_path = merged_path.with_suffix(merged_path.suffix + ".tmp")
+        with open(tmp_path, "w", newline="") as file_obj:
+            self._write_merged_header(file_obj)
+            writer = csv.writer(file_obj)
+            for packet in packets:
+                writer.writerow(self._merged_row(packet))
+        self.files["merged"].close()
+        try:
+            tmp_path.replace(merged_path)
+        finally:
+            self.files["merged"] = self._open("merged")
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+    def write_event(self, event: str, note: str = "") -> None:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        safe_event = event.replace("\n", " ").replace("\r", " ")
+        safe_note = note.replace("\n", " ").replace("\r", " ")
+        csv.writer(self.files["events"]).writerow([timestamp, safe_event, safe_note])
+
+    def _merged_row(self, packet: TelemetryPacket) -> list[str]:
+        rssi = "" if packet.rssi is None else str(packet.rssi)
+        snr = "" if packet.snr is None else f"{packet.snr:.2f}"
+        return [self._format_log_time(packet.arrival_time)] + packet.csv_values() + [packet.source, rssi, snr]
+
+    def _format_log_time(self, timestamp: Optional[float] = None) -> str:
+        if timestamp is None:
+            return datetime.now().isoformat(timespec="seconds")
+        return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+
+    def close(self) -> None:
+        for file_obj in self.files.values():
+            file_obj.close()
