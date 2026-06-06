@@ -243,11 +243,25 @@ class GpsMapTests(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
-    def packet(self, millis=1, lat=8.367500, lon=100.043922, sats=12, alt_gps=-1.8):
+    def packet(
+        self,
+        millis=1,
+        lat=8.367500,
+        lon=100.043922,
+        sats=12,
+        alt_gps=-1.8,
+        ax=0.1000,
+        ay=0.2000,
+        az=0.3000,
+        qw=1.0000,
+        qx=0.0000,
+        qy=0.0000,
+        qz=0.0000,
+    ):
         line = (
             f"{millis},{lat:.6f},{lon:.6f},{alt_gps:.2f},{sats},56.02,24.98,1006.54,"
-            "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
-            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.684,-90.500,-0.333"
+            f"{ax:.4f},{ay:.4f},{az:.4f},-0.1445,0.2070,0.2324,"
+            f"{qw:.4f},{qx:.4f},{qy:.4f},{qz:.4f},0.00,0.00,0.00,3.684,-90.500,-0.333"
         )
         return self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, 1000.0)
 
@@ -290,6 +304,44 @@ class GpsMapTests(unittest.TestCase):
         self.assertEqual(len(display_packets), 4)
         self.assertIs(display_packets[0], packets[0])
         self.assertIs(display_packets[-1], packets[-1])
+
+    def test_packet_orientation_uses_quaternion_when_valid(self):
+        packet = self.packet(qw=0.7071, qx=0.0, qy=0.7071, qz=0.0)
+
+        axis, source = self.monitor.packet_orientation_axis(packet)
+        label, tilt_degrees = self.monitor.orientation_label(axis)
+
+        self.assertEqual(source, "quat")
+        self.assertEqual(label, "Horizontal")
+        self.assertAlmostEqual(abs(axis[0]), 1.0, places=3)
+        self.assertAlmostEqual(tilt_degrees, 90.0, delta=0.2)
+
+    def test_packet_orientation_ignores_accelerometer_when_quaternion_is_missing(self):
+        packet = self.packet(ax=1.0, ay=0.0, az=0.0, qw=0.0, qx=0.0, qy=0.0, qz=0.0)
+
+        axis, source = self.monitor.packet_orientation_axis(packet)
+        label, tilt_degrees = self.monitor.orientation_label(axis)
+
+        self.assertEqual(source, "unknown")
+        self.assertEqual(label, "Vertical")
+        self.assertAlmostEqual(axis[2], 1.0)
+        self.assertAlmostEqual(tilt_degrees, 0.0)
+
+    def test_packet_orientation_exposes_yaw_even_when_tilt_is_vertical(self):
+        yaw = math.radians(90.0)
+        packet = self.packet(qw=math.cos(yaw / 2.0), qx=0.0, qy=0.0, qz=math.sin(yaw / 2.0))
+
+        rotation, source = self.monitor.packet_orientation_rotation(packet)
+        axis = rotation[:, 2]
+        label, tilt_degrees = self.monitor.orientation_label(axis)
+        roll, pitch, yaw_degrees = self.monitor.rotation_euler_degrees(rotation)
+
+        self.assertEqual(source, "quat")
+        self.assertEqual(label, "Vertical")
+        self.assertAlmostEqual(tilt_degrees, 0.0)
+        self.assertAlmostEqual(roll, 0.0)
+        self.assertAlmostEqual(pitch, 0.0)
+        self.assertAlmostEqual(yaw_degrees, 90.0, delta=0.2)
 
     def test_osm_tile_projection_and_bounds_are_consistent(self):
         x, y = self.monitor.osm_tile_xy(0.0, 0.0, 1)
@@ -921,11 +973,21 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         except self.monitor.tk.TclError:
             pass
 
-    def packet_line(self, millis=128518, voltage=3.684, lat=8.367500, lon=100.043922):
+    def packet_line(
+        self,
+        millis=128518,
+        voltage=3.684,
+        lat=8.367500,
+        lon=100.043922,
+        qw=1.0000,
+        qx=0.0000,
+        qy=0.0000,
+        qz=0.0000,
+    ):
         return (
             f"{millis},{lat:.6f},{lon:.6f},-1.80,12,56.02,24.98,1006.54,"
             "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
-            f"1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,{voltage:.3f},-90.500,-0.333"
+            f"{qw:.4f},{qx:.4f},{qy:.4f},{qz:.4f},0.00,0.00,0.00,{voltage:.3f},-90.500,-0.333"
         )
 
     def merged_log_rows(self, path):
@@ -1050,6 +1112,135 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(app.ui_error_count, 1)
         self.assertIn("UI recovered from event error", app.summary_var.get())
         self.assertEqual(scheduled[-1][1], app._drain_events)
+
+    def test_orientation_overlay_updates_from_merged_packet(self):
+        app = self.make_app()
+
+        app._handle_line(
+            "port1",
+            self.packet_line(millis=15, qw=0.7071, qx=0.0, qy=0.7071, qz=0.0),
+            arrival_time=1000.0,
+        )
+
+        self.assertIs(app.orientation_packet, app.merged_packets[-1])
+        overlay_text = [text.get_text() for text in app.orientation_text_ax.texts]
+        self.assertIn("Horizontal", overlay_text)
+        self.assertTrue(any("quat" in text for text in overlay_text))
+
+    def test_orientation_overlay_holds_last_real_bno_quaternion_through_default_rows(self):
+        app = self.make_app()
+
+        app._handle_line(
+            "port1",
+            self.packet_line(millis=15, qw=0.7071, qx=0.0, qy=0.7071, qz=0.0),
+            arrival_time=1000.0,
+        )
+        app._handle_line(
+            "port1",
+            self.packet_line(millis=16, qw=1.0, qx=0.0, qy=0.0, qz=0.0),
+            arrival_time=1001.0,
+        )
+
+        self.assertIs(app.orientation_packet, app.merged_packets[-1])
+        overlay_text = [text.get_text() for text in app.orientation_text_ax.texts]
+        self.assertIn("Horizontal", overlay_text)
+        self.assertTrue(any("held quat" in text for text in overlay_text))
+
+    def test_interactive_orientation_overlay_uses_framed_panel(self):
+        class FakeCanvas:
+            def __init__(self):
+                self.calls = []
+
+            def bind(self, *args):
+                self.calls.append(("bind", args))
+
+            def tag_bind(self, *args):
+                self.calls.append(("tag_bind", args))
+
+        class FakeMarker:
+            def __init__(self, lat, lon, text, **kwargs):
+                self.positions = [(lat, lon)]
+                self.text = text
+                self.kwargs = kwargs
+
+            def set_position(self, lat, lon):
+                self.positions.append((lat, lon))
+
+            def delete(self):
+                pass
+
+        class FakeMapWidget:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.width = 300
+                self.height = 200
+                self.canvas = FakeCanvas()
+                self.positions = []
+                self.markers = []
+                self.zooms = []
+                FakeMapWidget.instances.append(self)
+
+            def pack(self, *args, **kwargs):
+                pass
+
+            def set_zoom(self, zoom):
+                self.zooms.append(zoom)
+
+            def set_position(self, lat, lon):
+                self.positions.append((lat, lon))
+
+            def set_marker(self, lat, lon, text=None, **kwargs):
+                marker = FakeMarker(lat, lon, text, **kwargs)
+                self.markers.append(marker)
+                return marker
+
+        class FakeTkinterMapViewModule:
+            TkinterMapView = FakeMapWidget
+
+        original_map_module = self.monitor.tkintermapview
+        self.addCleanup(setattr, self.monitor, "tkintermapview", original_map_module)
+        self.monitor.tkintermapview = FakeTkinterMapViewModule
+        try:
+            app = self.monitor.GroundStationMonitorApp(use_interactive_map=True)
+        except self.monitor.tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        self.addCleanup(self.destroy_app, app)
+
+        app._handle_line(
+            "port1",
+            self.packet_line(millis=16, qw=0.7071, qx=0.0, qy=0.7071, qz=0.0),
+            arrival_time=1000.0,
+        )
+
+        canvas = FakeMapWidget.instances[-1].canvas
+        call_types = [call[0] for call in canvas.calls]
+        overlay_text = [text.get_text() for text in app.orientation_text_ax.texts]
+        self.assertEqual(call_types, [])
+        self.assertTrue(hasattr(app, "orientation_canvas"))
+        self.assertIn("Horizontal", overlay_text)
+
+    def test_orientation_overlay_drag_changes_view_without_resetting_on_refresh(self):
+        app = self.make_app()
+
+        class Event:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+
+        app._start_orientation_view_drag(Event(20, 20))
+        app._drag_orientation_view(Event(50, 5))
+        app._end_orientation_view_drag(Event(50, 5))
+        dragged_elev = app.orientation_view_elev
+        dragged_azim = app.orientation_view_azim
+
+        self.assertNotEqual(dragged_elev, self.monitor.ORIENTATION_VIEW_ELEV)
+        self.assertNotEqual(dragged_azim, self.monitor.ORIENTATION_VIEW_AZIM)
+
+        app._refresh_orientation_model(app.orientation_packet)
+
+        self.assertAlmostEqual(app.orientation_ax.elev, dragged_elev)
+        self.assertAlmostEqual(app.orientation_ax.azim, dragged_azim)
 
     def test_chart_figures_are_created_and_refreshed_from_packets(self):
         app = self.make_app(charts=True)

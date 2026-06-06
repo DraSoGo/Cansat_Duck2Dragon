@@ -46,7 +46,7 @@
 // ---------------- LoRa config ----------------
 #define BAND       922250000
 #define LORA_BW    125E3
-#define LORA_SF    11
+#define LORA_SF    8
 
 // ---------------- Storage config ----------------
 #define LOG_PATH        "/cansat.csv"
@@ -66,6 +66,9 @@ Adafruit_INA219   ina219(0x40);
 MS5611            ms5611(0x77);
 
 sh2_SensorValue_t bnoSensorValue;
+float bnoAx = 0, bnoAy = 0, bnoAz = 0;
+float bnoGx = 0, bnoGy = 0, bnoGz = 0;
+float bnoQw = 1, bnoQx = 0, bnoQy = 0, bnoQz = 0;
 
 bool okBNO = false, okMS = false, okINA = false, okADXL = false;
 
@@ -243,6 +246,36 @@ void appendInt(String& s, long v)
   s += ',';
 }
 
+void updateBNOReadings()
+{
+  if (!okBNO) return;
+
+  uint8_t eventsRead = 0;
+  while (eventsRead < 12 && bno.getSensorEvent(&bnoSensorValue))
+  {
+    eventsRead++;
+    switch (bnoSensorValue.sensorId)
+    {
+      case SH2_LINEAR_ACCELERATION:
+        bnoAx = bnoSensorValue.un.linearAcceleration.x;
+        bnoAy = bnoSensorValue.un.linearAcceleration.y;
+        bnoAz = bnoSensorValue.un.linearAcceleration.z;
+        break;
+      case SH2_GYROSCOPE_CALIBRATED:
+        bnoGx = bnoSensorValue.un.gyroscope.x;
+        bnoGy = bnoSensorValue.un.gyroscope.y;
+        bnoGz = bnoSensorValue.un.gyroscope.z;
+        break;
+      case SH2_ROTATION_VECTOR:
+        bnoQw = bnoSensorValue.un.rotationVector.real;
+        bnoQx = bnoSensorValue.un.rotationVector.i;
+        bnoQy = bnoSensorValue.un.rotationVector.j;
+        bnoQz = bnoSensorValue.un.rotationVector.k;
+        break;
+    }
+  }
+}
+
 String buildCsvLine()
 {
   String line;
@@ -280,44 +313,17 @@ String buildCsvLine()
   }
 
   // 8-17: BNO085 accel(3), gyro(3), quaternion(4)
-  float bax = 0, bay = 0, baz = 0;
-  float bgx = 0, bgy = 0, bgz = 0;
-  float qw = 1, qx = 0, qy = 0, qz = 0;
-  if (okBNO)
-  {
-    if (bno.getSensorEvent(&bnoSensorValue))
-    {
-      switch (bnoSensorValue.sensorId)
-      {
-        case SH2_LINEAR_ACCELERATION:
-          bax = bnoSensorValue.un.linearAcceleration.x;
-          bay = bnoSensorValue.un.linearAcceleration.y;
-          baz = bnoSensorValue.un.linearAcceleration.z;
-          break;
-        case SH2_GYROSCOPE_CALIBRATED:
-          bgx = bnoSensorValue.un.gyroscope.x;
-          bgy = bnoSensorValue.un.gyroscope.y;
-          bgz = bnoSensorValue.un.gyroscope.z;
-          break;
-        case SH2_ROTATION_VECTOR:
-          qw = bnoSensorValue.un.rotationVector.real;
-          qx = bnoSensorValue.un.rotationVector.i;
-          qy = bnoSensorValue.un.rotationVector.j;
-          qz = bnoSensorValue.un.rotationVector.k;
-          break;
-      }
-    }
-  }
-  appendFloat(line, bax, 4);
-  appendFloat(line, bay, 4);
-  appendFloat(line, baz, 4);
-  appendFloat(line, bgx, 4);
-  appendFloat(line, bgy, 4);
-  appendFloat(line, bgz, 4);
-  appendFloat(line, qw, 4);
-  appendFloat(line, qx, 4);
-  appendFloat(line, qy, 4);
-  appendFloat(line, qz, 4);
+  updateBNOReadings();
+  appendFloat(line, bnoAx, 4);
+  appendFloat(line, bnoAy, 4);
+  appendFloat(line, bnoAz, 4);
+  appendFloat(line, bnoGx, 4);
+  appendFloat(line, bnoGy, 4);
+  appendFloat(line, bnoGz, 4);
+  appendFloat(line, bnoQw, 4);
+  appendFloat(line, bnoQx, 4);
+  appendFloat(line, bnoQy, 4);
+  appendFloat(line, bnoQz, 4);
 
   // 18-20: ADXL375 high-G xyz
   float hax = 0, hay = 0, haz = 0;
@@ -358,6 +364,7 @@ void loop()
   static uint32_t nextTick = 0;
 
   feedGPS();
+  updateBNOReadings();
 
   if (millis() < nextTick) return;
   nextTick = millis() + LOOP_PERIOD_MS;

@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterable, Optional
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 try:
     import tkintermapview
@@ -50,10 +51,34 @@ OSM_TILE_RETRY_SECONDS = 60.0
 OSM_MAX_TILES_PER_REFRESH = 9
 OSM_TILE_USER_AGENT = "Duck2DragonMonitor/1.0"
 MERGE_SIDE_PANEL_WIDTH = 470
-GPS_MAP_MAX_DISPLAY_POINTS = 2000
+GPS_MAP_MAX_DISPLAY_POINTS = 5000
 WEB_MERCATOR_MAX_LAT = 85.05112878
 MIN_LON = -180.0
 MAX_LON = 180.0
+ORIENTATION_VERTICAL_DEGREES = 25.0
+ORIENTATION_HORIZONTAL_DEGREES = 65.0
+ORIENTATION_IDENTITY_EPS = 1e-4
+ORIENTATION_OVERLAY_DPI = 100
+ORIENTATION_OVERLAY_WIDTH = 155
+ORIENTATION_OVERLAY_HEIGHT = 125
+ORIENTATION_OVERLAY_OFFSET_X = -10
+ORIENTATION_OVERLAY_OFFSET_Y = 10
+ORIENTATION_OVERLAY_BG = "#ffffff"
+ORIENTATION_OVERLAY_BORDER_COLOR = "#0f172a"
+ORIENTATION_OVERLAY_BORDER_WIDTH = 1
+ORIENTATION_OVERLAY_TEXT_COLOR = "#0f172a"
+ORIENTATION_OVERLAY_MUTED_TEXT_COLOR = "#475569"
+ORIENTATION_CANSAT_BODY_COLOR = "#38bdf8"
+ORIENTATION_CANSAT_EDGE_COLOR = "#0f172a"
+ORIENTATION_CANSAT_STRIPE_COLOR = "#ef4444"
+ORIENTATION_CANSAT_TOP_COLOR = "#f97316"
+ORIENTATION_MODEL_VIEW_LEFT = 0.26
+ORIENTATION_MODEL_VIEW_BOTTOM = 0.04
+ORIENTATION_MODEL_VIEW_WIDTH = 0.70
+ORIENTATION_MODEL_VIEW_HEIGHT = 0.70
+ORIENTATION_VIEW_ELEV = 20.0
+ORIENTATION_VIEW_AZIM = -45.0
+ORIENTATION_VIEW_DRAG_SENSITIVITY = 0.6
 OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
 OsmTileKey = tuple[int, int, int]
 OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
@@ -639,6 +664,67 @@ def gps_map_display_packets(
     return [packets[int(index * step)] for index in range(max_points - 1)] + [packets[-1]]
 
 
+def packet_orientation_axis(packet: TelemetryPacket) -> tuple[np.ndarray, str]:
+    rotation, source = packet_orientation_rotation(packet)
+    return rotation[:, 2], source
+
+
+def packet_orientation_rotation(packet: TelemetryPacket) -> tuple[np.ndarray, str]:
+    quaternion = np.array([packet.qw, packet.qx, packet.qy, packet.qz], dtype=float)
+    if np.all(np.isfinite(quaternion)):
+        norm = np.linalg.norm(quaternion)
+        if norm > 0.01:
+            rotation = quaternion_rotation_matrix(quaternion / norm)
+            if np.all(np.isfinite(rotation)):
+                return rotation, "quat"
+
+    return np.identity(3), "unknown"
+
+
+def packet_has_default_orientation(packet: TelemetryPacket) -> bool:
+    quaternion = np.array([packet.qw, packet.qx, packet.qy, packet.qz], dtype=float)
+    if not np.all(np.isfinite(quaternion)):
+        return True
+    return bool(np.linalg.norm(quaternion - np.array([1.0, 0.0, 0.0, 0.0], dtype=float)) <= ORIENTATION_IDENTITY_EPS)
+
+
+def quaternion_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
+    w, x, y, z = quaternion
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=float,
+    )
+
+
+def rotation_euler_degrees(rotation: np.ndarray) -> tuple[float, float, float]:
+    pitch_sin = -float(rotation[2, 0])
+    pitch_sin = min(1.0, max(-1.0, pitch_sin))
+    pitch = math.asin(pitch_sin)
+    if abs(math.cos(pitch)) > 1e-6:
+        roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+        yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
+    else:
+        roll = 0.0
+        yaw = math.atan2(-float(rotation[0, 1]), float(rotation[1, 1]))
+    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+
+
+def orientation_label(axis: np.ndarray) -> tuple[str, float]:
+    vertical_component = min(1.0, max(-1.0, abs(float(axis[2]))))
+    tilt_degrees = math.degrees(math.acos(vertical_component))
+    if tilt_degrees <= ORIENTATION_VERTICAL_DEGREES:
+        label = "Vertical"
+    elif tilt_degrees >= ORIENTATION_HORIZONTAL_DEGREES:
+        label = "Horizontal"
+    else:
+        label = "Tilted"
+    return label, tilt_degrees
+
+
 def osm_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float]:
     lat = max(min(lat, WEB_MERCATOR_MAX_LAT), -WEB_MERCATOR_MAX_LAT)
     lat_rad = math.radians(lat)
@@ -895,6 +981,11 @@ class GroundStationMonitorApp(tk.Tk):
         self.dirty_port_charts = {"port1": False, "port2": False}
         self.last_chart_refresh = 0.0
         self.ui_error_count = 0
+        self.orientation_packet: Optional[TelemetryPacket] = None
+        self.last_bno_orientation_rotation: Optional[np.ndarray] = None
+        self.orientation_view_elev = ORIENTATION_VIEW_ELEV
+        self.orientation_view_azim = ORIENTATION_VIEW_AZIM
+        self.orientation_drag_start: Optional[tuple[int, int, float, float]] = None
         self.osm_layer_cache: dict[tuple[OsmTileKey, ...], list[OsmTileLayer]] = {}
         self.osm_tile_requests: set[tuple[OsmTileKey, ...]] = set()
         self.gps_start_marker: Any = None
@@ -1022,15 +1113,18 @@ class GroundStationMonitorApp(tk.Tk):
         gps_controls.pack(fill="x", padx=4, pady=(4, 0))
         self.gps_map_status_var = tk.StringVar(value="Map: waiting for GPS fix")
         ttk.Label(gps_controls, textvariable=self.gps_map_status_var).pack(side="left")
+        gps_body = ttk.Frame(gps_frame)
+        gps_body.pack(fill="both", expand=True, padx=4, pady=4)
         if self.use_interactive_gps_map:
-            self.gps_map_widget = tkintermapview.TkinterMapView(gps_frame, corner_radius=0)
-            self.gps_map_widget.pack(fill="both", expand=True, padx=4, pady=4)
+            self.gps_map_widget = tkintermapview.TkinterMapView(gps_body, corner_radius=0)
+            self.gps_map_widget.pack(fill="both", expand=True)
             self.gps_map_widget.set_zoom(16)
         else:
             self.gps_map_widget = None
-            self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_frame, "GPS Track", "relative north")
+            self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_body, "GPS Track", "relative north")
             if tkintermapview is None:
                 self.gps_map_status_var.set("Map: install tkintermapview for draggable live map")
+        self._build_orientation_overlay(gps_body)
 
         lower_charts = ttk.Frame(chart_area)
         lower_charts.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
@@ -1097,6 +1191,52 @@ class GroundStationMonitorApp(tk.Tk):
         canvas.get_tk_widget().pack(fill="both", expand=True)
         return figure, axis, canvas
 
+    def _build_orientation_overlay(self, parent) -> None:
+        self.orientation_fig = Figure(
+            figsize=(
+                ORIENTATION_OVERLAY_WIDTH / ORIENTATION_OVERLAY_DPI,
+                ORIENTATION_OVERLAY_HEIGHT / ORIENTATION_OVERLAY_DPI,
+            ),
+            dpi=ORIENTATION_OVERLAY_DPI,
+        )
+        self.orientation_fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        self.orientation_text_ax = self.orientation_fig.add_axes([0, 0, 1, 1])
+        self.orientation_text_ax.set_axis_off()
+        self.orientation_text_ax.set_zorder(2)
+        self.orientation_ax = self.orientation_fig.add_axes(
+            [
+                ORIENTATION_MODEL_VIEW_LEFT,
+                ORIENTATION_MODEL_VIEW_BOTTOM,
+                ORIENTATION_MODEL_VIEW_WIDTH,
+                ORIENTATION_MODEL_VIEW_HEIGHT,
+            ],
+            projection="3d",
+        )
+        self.orientation_ax.set_zorder(1)
+        self.orientation_canvas = FigureCanvasTkAgg(self.orientation_fig, master=parent)
+        widget = self.orientation_canvas.get_tk_widget()
+        widget.configure(
+            bd=0,
+            highlightthickness=ORIENTATION_OVERLAY_BORDER_WIDTH,
+            highlightbackground=ORIENTATION_OVERLAY_BORDER_COLOR,
+            highlightcolor=ORIENTATION_OVERLAY_BORDER_COLOR,
+            cursor="fleur",
+        )
+        widget.bind("<ButtonPress-1>", self._start_orientation_view_drag)
+        widget.bind("<B1-Motion>", self._drag_orientation_view)
+        widget.bind("<ButtonRelease-1>", self._end_orientation_view_drag)
+        widget.bind("<Double-Button-1>", self._reset_orientation_view)
+        widget.place(
+            relx=1.0,
+            rely=0.0,
+            anchor="ne",
+            x=ORIENTATION_OVERLAY_OFFSET_X,
+            y=ORIENTATION_OVERLAY_OFFSET_Y,
+            width=ORIENTATION_OVERLAY_WIDTH,
+            height=ORIENTATION_OVERLAY_HEIGHT,
+        )
+        self._refresh_orientation_model(None)
+
     def _make_tree(self, parent, columns: tuple[str, ...], height: int = 12) -> ttk.Treeview:
         tree = ttk.Treeview(parent, columns=columns, show="headings", height=height)
         for column in columns:
@@ -1110,6 +1250,160 @@ class GroundStationMonitorApp(tk.Tk):
         for y, (x1, x2) in enumerate(rows):
             icon.put("#2563eb", to=(x1, y, x2 + 1, y + 1))
         return icon
+
+    def _refresh_orientation_model(self, packet: Optional[TelemetryPacket]) -> None:
+        if not hasattr(self, "orientation_ax"):
+            return
+        axis = self.orientation_ax
+        text_axis = self.orientation_text_ax
+        axis.clear()
+        text_axis.clear()
+        text_axis.set_axis_off()
+        text_axis.set_zorder(2)
+        axis.figure.set_facecolor(ORIENTATION_OVERLAY_BG)
+        axis.set_facecolor(ORIENTATION_OVERLAY_BG)
+        widget = self.orientation_canvas.get_tk_widget()
+        widget.configure(
+            highlightbackground=ORIENTATION_OVERLAY_BORDER_COLOR,
+            highlightcolor=ORIENTATION_OVERLAY_BORDER_COLOR,
+        )
+        axis.set_axis_off()
+        axis.set_xlim(-0.5, 0.5)
+        axis.set_ylim(-0.5, 0.5)
+        axis.set_zlim(-0.5, 0.5)
+        axis.view_init(elev=self.orientation_view_elev, azim=self.orientation_view_azim)
+        axis.set_box_aspect((1, 1, 1))
+
+        rotation, _model_axis, label, source, tilt_degrees, roll, pitch, yaw = self._orientation_state(packet)
+
+        self._draw_cansat_cylinder(axis, rotation)
+        axis.quiver(0, 0, 0, 0, 0, 0.85, color="#94a3b8", linewidth=1.0, arrow_length_ratio=0.12)
+        text_axis.text(
+            0.04,
+            0.90,
+            label,
+            transform=text_axis.transAxes,
+            color=ORIENTATION_OVERLAY_TEXT_COLOR,
+            fontsize=8,
+            weight="bold",
+        )
+        text_axis.text(
+            0.04,
+            0.76,
+            f"{tilt_degrees:.0f} deg | {source}",
+            transform=text_axis.transAxes,
+            color=ORIENTATION_OVERLAY_MUTED_TEXT_COLOR,
+            fontsize=6,
+        )
+        text_axis.text(
+            0.04,
+            0.64,
+            f"R {roll:.0f}  P {pitch:.0f}  Y {yaw:.0f}",
+            transform=text_axis.transAxes,
+            color=ORIENTATION_OVERLAY_MUTED_TEXT_COLOR,
+            fontsize=6,
+        )
+        self.orientation_canvas.draw_idle()
+
+    def _start_orientation_view_drag(self, event) -> str:
+        self.orientation_drag_start = (
+            int(event.x),
+            int(event.y),
+            float(self.orientation_view_elev),
+            float(self.orientation_view_azim),
+        )
+        return "break"
+
+    def _drag_orientation_view(self, event) -> str:
+        if self.orientation_drag_start is None:
+            return "break"
+        start_x, start_y, start_elev, start_azim = self.orientation_drag_start
+        dx = int(event.x) - start_x
+        dy = int(event.y) - start_y
+        self.orientation_view_azim = start_azim + dx * ORIENTATION_VIEW_DRAG_SENSITIVITY
+        self.orientation_view_elev = max(
+            -89.0,
+            min(89.0, start_elev - dy * ORIENTATION_VIEW_DRAG_SENSITIVITY),
+        )
+        self._refresh_orientation_model(self.orientation_packet)
+        return "break"
+
+    def _end_orientation_view_drag(self, _event) -> str:
+        self.orientation_drag_start = None
+        return "break"
+
+    def _reset_orientation_view(self, _event) -> str:
+        self.orientation_view_elev = ORIENTATION_VIEW_ELEV
+        self.orientation_view_azim = ORIENTATION_VIEW_AZIM
+        self.orientation_drag_start = None
+        self._refresh_orientation_model(self.orientation_packet)
+        return "break"
+
+    def _orientation_state(
+        self, packet: Optional[TelemetryPacket]
+    ) -> tuple[np.ndarray, np.ndarray, str, str, float, float, float, float]:
+        if packet is None:
+            rotation = np.identity(3)
+            source = "waiting"
+            label = "Orientation"
+            tilt_degrees = 0.0
+        else:
+            rotation, source = packet_orientation_rotation(packet)
+            if source == "quat" and not packet_has_default_orientation(packet):
+                self.last_bno_orientation_rotation = rotation
+            elif self.last_bno_orientation_rotation is not None:
+                rotation = self.last_bno_orientation_rotation
+                source = "held quat"
+            label, tilt_degrees = orientation_label(rotation[:, 2])
+        roll, pitch, yaw = rotation_euler_degrees(rotation)
+        return rotation, rotation[:, 2], label, source, tilt_degrees, roll, pitch, yaw
+
+    def _draw_cansat_cylinder(self, axis, rotation: np.ndarray) -> None:
+        side_a = rotation[:, 0]
+        side_b = rotation[:, 1]
+        direction = rotation[:, 2]
+
+        radius = 0.28
+        half_length = 0.62
+        angles = np.linspace(0, 2 * math.pi, 24, endpoint=False)
+        bottom_center = -half_length * direction
+        top_center = half_length * direction
+        bottom = [bottom_center + radius * math.cos(angle) * side_a + radius * math.sin(angle) * side_b for angle in angles]
+        top = [top_center + radius * math.cos(angle) * side_a + radius * math.sin(angle) * side_b for angle in angles]
+
+        faces = []
+        for index in range(len(angles)):
+            next_index = (index + 1) % len(angles)
+            faces.append([bottom[index], bottom[next_index], top[next_index], top[index]])
+        faces.append(top)
+        faces.append(list(reversed(bottom)))
+        cylinder = Poly3DCollection(
+            faces,
+            facecolors=ORIENTATION_CANSAT_BODY_COLOR,
+            edgecolors=ORIENTATION_CANSAT_EDGE_COLOR,
+            linewidths=0.6,
+            alpha=0.92,
+        )
+        axis.add_collection3d(cylinder)
+        stripe_bottom = bottom_center + radius * 1.05 * side_a
+        stripe_top = top_center + radius * 1.05 * side_a
+        axis.plot(
+            [stripe_bottom[0], stripe_top[0]],
+            [stripe_bottom[1], stripe_top[1]],
+            [stripe_bottom[2], stripe_top[2]],
+            color=ORIENTATION_CANSAT_STRIPE_COLOR,
+            linewidth=2.4,
+        )
+        axis.scatter([stripe_top[0]], [stripe_top[1]], [stripe_top[2]], color=ORIENTATION_CANSAT_TOP_COLOR, s=16)
+        axis.quiver(
+            0,
+            0,
+            0,
+            *(direction * 0.9),
+            color=ORIENTATION_CANSAT_STRIPE_COLOR,
+            linewidth=2.0,
+            arrow_length_ratio=0.16,
+        )
 
     def _toggle_theme(self) -> None:
         self.theme_name = "dark" if self.theme_name == "light" else "light"
@@ -1174,6 +1468,7 @@ class GroundStationMonitorApp(tk.Tk):
         )
         if redraw:
             self._style_all_figures()
+            self._refresh_orientation_model(self.orientation_packet)
 
     def _style_all_figures(self) -> None:
         for axis, canvas in self._figure_axes():
@@ -1550,6 +1845,8 @@ class GroundStationMonitorApp(tk.Tk):
         if not self.merged_packets:
             return
         packet = display_packet or self.merged_packets[-1]
+        self.orientation_packet = packet
+        self._refresh_orientation_model(packet)
         alerts = evaluate_alerts(packet)
         self.merge_status_var.set(f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}")
         self.readout_var.set(
