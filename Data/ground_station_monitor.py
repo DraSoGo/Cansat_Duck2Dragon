@@ -25,23 +25,6 @@ try:
 except Exception:
     tkintermapview = None
 
-from telemetry_core import (
-    AlertConfig,
-    ApogeeDetector,
-    LogWriter,
-    MergeBuffer,
-    PortState,
-    TelemetryPacket,
-    TelemetryParser,
-    evaluate_alerts,
-    evaluate_port_alerts,
-    orientation_label,
-    packet_has_default_orientation,
-    packet_orientation_rotation,
-    quaternion_rotation_matrix,
-    rotation_euler_degrees,
-)
-
 
 CSV_HEADER = (
     "millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,"
@@ -95,7 +78,7 @@ ORIENTATION_MODEL_VIEW_WIDTH = 0.50
 ORIENTATION_MODEL_VIEW_HEIGHT = 0.55
 ORIENTATION_VIEW_ELEV = 20.0
 ORIENTATION_VIEW_AZIM = -45.0
-ORIENTATION_VIEW_DRAG_SENSITIVITY = 0.3
+ORIENTATION_VIEW_DRAG_SENSITIVITY = 0.6
 OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
 OsmTileKey = tuple[int, int, int]
 OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
@@ -131,6 +114,377 @@ THEME_COLORS = {
         "grid": "#475569",
     },
 }
+
+
+@dataclass(frozen=True)
+class TelemetryPacket:
+    raw_line: str
+    source: str
+    arrival_time: float
+    rssi: Optional[int]
+    snr: Optional[float]
+    millis: int
+    lat: float
+    lon: float
+    alt_gps: float
+    sats: int
+    alt_baro: float
+    temp: float
+    pressure: float
+    ax: float
+    ay: float
+    az: float
+    gx: float
+    gy: float
+    gz: float
+    qw: float
+    qx: float
+    qy: float
+    qz: float
+    high_ax: float
+    high_ay: float
+    high_az: float
+    voltage: float
+    current: float
+    watt: float
+
+    @property
+    def gps_valid(self) -> bool:
+        return (
+            self.sats > 0
+            and math.isfinite(self.lat)
+            and math.isfinite(self.lon)
+            and -WEB_MERCATOR_MAX_LAT <= self.lat <= WEB_MERCATOR_MAX_LAT
+            and MIN_LON <= self.lon <= MAX_LON
+            and not (self.lat == 0.0 and self.lon == 0.0)
+        )
+
+    @property
+    def accel_mag(self) -> float:
+        return math.sqrt(self.ax * self.ax + self.ay * self.ay + self.az * self.az)
+
+    def csv_values(self) -> list[str]:
+        return [
+            str(self.millis),
+            f"{self.lat:.6f}",
+            f"{self.lon:.6f}",
+            f"{self.alt_gps:.2f}",
+            str(self.sats),
+            f"{self.alt_baro:.2f}",
+            f"{self.temp:.2f}",
+            f"{self.pressure:.2f}",
+            f"{self.ax:.4f}",
+            f"{self.ay:.4f}",
+            f"{self.az:.4f}",
+            f"{self.gx:.4f}",
+            f"{self.gy:.4f}",
+            f"{self.gz:.4f}",
+            f"{self.qw:.4f}",
+            f"{self.qx:.4f}",
+            f"{self.qy:.4f}",
+            f"{self.qz:.4f}",
+            f"{self.high_ax:.2f}",
+            f"{self.high_ay:.2f}",
+            f"{self.high_az:.2f}",
+            f"{self.voltage:.3f}",
+            f"{self.current:.3f}",
+            f"{self.watt:.3f}",
+        ]
+
+
+LOW_VOLTAGE_THRESHOLD = 3.5
+WEAK_RSSI_THRESHOLD = -110
+STALE_PACKET_SECONDS = 3.0
+MALFORMED_BURST_THRESHOLD = 5
+
+
+@dataclass
+class PortState:
+    source: str
+    status: str = "offline"
+    message: str = ""
+    latest_raw_line: str = ""
+    latest_packet: Optional[TelemetryPacket] = None
+    latest_rssi: Optional[int] = None
+    latest_snr: Optional[float] = None
+    packet_count: int = 0
+    malformed_count: int = 0
+    last_seen_time: Optional[float] = None
+    recent_malformed: int = 0
+
+    def record_status(self, status: str, message: str = "") -> None:
+        self.status = status
+        self.message = message
+
+    def record_raw(self, line: str, arrival_time: float) -> None:
+        self.latest_raw_line = line
+        self.last_seen_time = arrival_time
+
+    def record_link(self, rssi: Optional[int], snr: Optional[float]) -> None:
+        if rssi is not None:
+            self.latest_rssi = rssi
+        if snr is not None:
+            self.latest_snr = snr
+
+    def record_packet(self, packet: TelemetryPacket) -> None:
+        self.latest_packet = packet
+        self.packet_count += 1
+        self.recent_malformed = 0
+        self.last_seen_time = packet.arrival_time
+
+    def record_malformed(self, line: str, arrival_time: Optional[float] = None) -> None:
+        self.latest_raw_line = line
+        self.malformed_count += 1
+        self.recent_malformed += 1
+        if arrival_time is not None:
+            self.last_seen_time = arrival_time
+
+
+def evaluate_alerts(packet: Optional[TelemetryPacket], now: Optional[float] = None) -> set[str]:
+    if packet is None:
+        return {"no_packet"}
+
+    current_time = time.time() if now is None else now
+    alerts: set[str] = set()
+    if packet.voltage < LOW_VOLTAGE_THRESHOLD:
+        alerts.add("low_voltage")
+    if packet.rssi is not None and packet.rssi < WEAK_RSSI_THRESHOLD:
+        alerts.add("weak_rssi")
+    if not packet.gps_valid:
+        alerts.add("no_gps_lock")
+    if current_time - packet.arrival_time > STALE_PACKET_SECONDS:
+        alerts.add("stale_packet")
+    return alerts
+
+
+def evaluate_port_alerts(state: PortState, now: Optional[float] = None) -> set[str]:
+    alerts = evaluate_alerts(state.latest_packet, now)
+    if state.recent_malformed >= MALFORMED_BURST_THRESHOLD:
+        alerts.add("malformed_burst")
+    return alerts
+
+
+class TelemetryParser:
+    LINK_RE = re.compile(r"RSSI=(-?\d+)\s+SNR=(-?\d+(?:\.\d+)?)")
+    LEADING_INT_RE = re.compile(r"\s*(\d+)")
+
+    @staticmethod
+    def parse_link_comment(line: str) -> tuple[Optional[int], Optional[float]]:
+        match = TelemetryParser.LINK_RE.search(line)
+        if not match:
+            return None, None
+        return int(match.group(1)), float(match.group(2))
+
+    @staticmethod
+    def parse_packet(
+        line: str,
+        source: str,
+        rssi: Optional[int],
+        snr: Optional[float],
+        arrival_time: Optional[float] = None,
+    ) -> TelemetryPacket:
+        parts = TelemetryParser._normalise_fields(line)
+        millis = TelemetryParser._parse_millis(parts[0])
+        voltage = TelemetryParser._float_or_nan(parts[21])
+        current = TelemetryParser._float_or_nan(parts[22])
+        watt = TelemetryParser._parse_watt(parts[23], voltage, current)
+        values = {
+            "millis": millis,
+            "lat": TelemetryParser._float_or_nan(parts[1]),
+            "lon": TelemetryParser._float_or_nan(parts[2]),
+            "alt_gps": TelemetryParser._float_or_nan(parts[3]),
+            "sats": TelemetryParser._int_or_nan(parts[4]),
+            "alt_baro": TelemetryParser._float_or_nan(parts[5]),
+            "temp": TelemetryParser._float_or_nan(parts[6]),
+            "pressure": TelemetryParser._float_or_nan(parts[7]),
+            "ax": TelemetryParser._float_or_nan(parts[8]),
+            "ay": TelemetryParser._float_or_nan(parts[9]),
+            "az": TelemetryParser._float_or_nan(parts[10]),
+            "gx": TelemetryParser._float_or_nan(parts[11]),
+            "gy": TelemetryParser._float_or_nan(parts[12]),
+            "gz": TelemetryParser._float_or_nan(parts[13]),
+            "qw": TelemetryParser._float_or_nan(parts[14]),
+            "qx": TelemetryParser._float_or_nan(parts[15]),
+            "qy": TelemetryParser._float_or_nan(parts[16]),
+            "qz": TelemetryParser._float_or_nan(parts[17]),
+            "high_ax": TelemetryParser._float_or_nan(parts[18]),
+            "high_ay": TelemetryParser._float_or_nan(parts[19]),
+            "high_az": TelemetryParser._float_or_nan(parts[20]),
+            "voltage": voltage,
+            "current": current,
+            "watt": watt,
+        }
+
+        return TelemetryPacket(
+            raw_line=line,
+            source=source,
+            arrival_time=time.time() if arrival_time is None else arrival_time,
+            rssi=rssi,
+            snr=snr,
+            **values,
+        )
+
+    @staticmethod
+    def _normalise_fields(line: str) -> list[str]:
+        data_part = line.split("#", 1)[0].strip()
+        if not data_part:
+            raise ValueError("empty telemetry row")
+        parts = [part.strip() for part in data_part.split(",")]
+        if len(parts) < CSV_FIELD_COUNT:
+            parts.extend([""] * (CSV_FIELD_COUNT - len(parts)))
+        return parts[:CSV_FIELD_COUNT]
+
+    @staticmethod
+    def _parse_millis(value: str) -> int:
+        try:
+            return int(float(value))
+        except ValueError as exc:
+            match = TelemetryParser.LEADING_INT_RE.match(value)
+            if match:
+                return int(match.group(1))
+            raise ValueError(f"invalid millis field: {value!r}") from exc
+
+    @staticmethod
+    def _float_or_nan(value: str) -> float:
+        if value == "":
+            return math.nan
+        try:
+            return float(value)
+        except ValueError:
+            return math.nan
+
+    @staticmethod
+    def _int_or_nan(value: str):
+        if value == "":
+            return math.nan
+        try:
+            return int(float(value))
+        except ValueError:
+            return math.nan
+
+    @staticmethod
+    def _parse_watt(value: str, voltage: float, current: float) -> float:
+        if value:
+            return TelemetryParser._float_or_nan(value)
+        if math.isfinite(voltage) and math.isfinite(current):
+            return voltage * current / 1000.0
+        return math.nan
+
+
+class MergeBuffer:
+    def __init__(self, max_packets: int = 2000):
+        self.max_packets = max_packets
+        self.selected: dict[int, TelemetryPacket] = {}
+        self.history: list[int] = []
+
+    def add(self, packet: TelemetryPacket) -> TelemetryPacket:
+        current = self.selected.get(packet.millis)
+        if current is None:
+            self.selected[packet.millis] = packet
+            self.history.append(packet.millis)
+            self._trim()
+            return packet
+
+        if self._is_better(packet, current):
+            self.selected[packet.millis] = packet
+            return packet
+
+        return current
+
+    @staticmethod
+    def _is_better(candidate: TelemetryPacket, current: TelemetryPacket) -> bool:
+        if candidate.rssi is not None and current.rssi is not None:
+            return candidate.rssi > current.rssi
+        if candidate.rssi is not None and current.rssi is None:
+            return True
+        if candidate.rssi is None and current.rssi is not None:
+            return False
+        return candidate.arrival_time < current.arrival_time
+
+    def _trim(self) -> None:
+        while len(self.history) > self.max_packets:
+            oldest = self.history.pop(0)
+            self.selected.pop(oldest, None)
+
+
+class LogWriter:
+    def __init__(self, log_dir: Path = LOG_DIR, session_id: Optional[str] = None):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.session_id = session_id or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.started = datetime.now().isoformat(timespec="seconds")
+        self.files = {
+            "port1": self._open("port1"),
+            "port2": self._open("port2"),
+            "merged": self._open("merged"),
+            "events": self._open("events"),
+        }
+        self._write_headers()
+
+    def _open(self, suffix: str):
+        return open(self.log_dir / f"{self.session_id}_{suffix}.csv", "a", buffering=1, newline="")
+
+    def _path(self, suffix: str) -> Path:
+        return self.log_dir / f"{self.session_id}_{suffix}.csv"
+
+    def _write_headers(self) -> None:
+        for source in ("port1", "port2"):
+            self.files[source].write(f"# session start {self.started}\n")
+            self.files[source].write(f"{RAW_LOG_HEADER}\n")
+        self._write_merged_header(self.files["merged"])
+        self.files["events"].write(f"# session start {self.started}\n")
+        self.files["events"].write("timestamp,event,note\n")
+
+    def _write_merged_header(self, file_obj) -> None:
+        file_obj.write(f"# session start {self.started}\n")
+        file_obj.write(f"{MERGED_LOG_HEADER}\n")
+
+    def write_raw(self, source: str, line: str, arrival_time: Optional[float] = None) -> None:
+        if source not in ("port1", "port2"):
+            raise ValueError(f"invalid raw log source: {source}")
+        csv.writer(self.files[source]).writerow([self._format_log_time(arrival_time), line.rstrip("\r\n")])
+
+    def write_merged(self, packet: TelemetryPacket) -> None:
+        csv.writer(self.files["merged"]).writerow(self._merged_row(packet))
+
+    def rewrite_merged(self, packets: Iterable[TelemetryPacket]) -> None:
+        merged_path = self._path("merged")
+        tmp_path = merged_path.with_suffix(merged_path.suffix + ".tmp")
+        with open(tmp_path, "w", newline="") as file_obj:
+            self._write_merged_header(file_obj)
+            writer = csv.writer(file_obj)
+            for packet in packets:
+                writer.writerow(self._merged_row(packet))
+        self.files["merged"].close()
+        try:
+            tmp_path.replace(merged_path)
+        finally:
+            self.files["merged"] = self._open("merged")
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+    def write_event(self, event: str, note: str = "") -> None:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        safe_event = event.replace("\n", " ").replace("\r", " ")
+        safe_note = note.replace("\n", " ").replace("\r", " ")
+        csv.writer(self.files["events"]).writerow([timestamp, safe_event, safe_note])
+
+    def _merged_row(self, packet: TelemetryPacket) -> list[str]:
+        rssi = "" if packet.rssi is None else str(packet.rssi)
+        snr = "" if packet.snr is None else f"{packet.snr:.2f}"
+        return [self._format_log_time(packet.arrival_time)] + packet.csv_values() + [packet.source, rssi, snr]
+
+    def _format_log_time(self, timestamp: Optional[float] = None) -> str:
+        if timestamp is None:
+            return datetime.now().isoformat(timespec="seconds")
+        return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+
+    def close(self) -> None:
+        for file_obj in self.files.values():
+            file_obj.close()
 
 
 class ReplayReader:
@@ -313,6 +667,62 @@ def gps_map_display_packets(
 def packet_orientation_axis(packet: TelemetryPacket) -> tuple[np.ndarray, str]:
     rotation, source = packet_orientation_rotation(packet)
     return rotation[:, 2], source
+
+
+def packet_orientation_rotation(packet: TelemetryPacket) -> tuple[np.ndarray, str]:
+    quaternion = np.array([packet.qw, packet.qx, packet.qy, packet.qz], dtype=float)
+    if np.all(np.isfinite(quaternion)):
+        norm = np.linalg.norm(quaternion)
+        if norm > 0.01:
+            rotation = quaternion_rotation_matrix(quaternion / norm)
+            if np.all(np.isfinite(rotation)):
+                return rotation, "quat"
+
+    return np.identity(3), "unknown"
+
+
+def packet_has_default_orientation(packet: TelemetryPacket) -> bool:
+    quaternion = np.array([packet.qw, packet.qx, packet.qy, packet.qz], dtype=float)
+    if not np.all(np.isfinite(quaternion)):
+        return True
+    return bool(np.linalg.norm(quaternion - np.array([1.0, 0.0, 0.0, 0.0], dtype=float)) <= ORIENTATION_IDENTITY_EPS)
+
+
+def quaternion_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
+    w, x, y, z = quaternion
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=float,
+    )
+
+
+def rotation_euler_degrees(rotation: np.ndarray) -> tuple[float, float, float]:
+    pitch_sin = -float(rotation[2, 0])
+    pitch_sin = min(1.0, max(-1.0, pitch_sin))
+    pitch = math.asin(pitch_sin)
+    if abs(math.cos(pitch)) > 1e-6:
+        roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+        yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
+    else:
+        roll = 0.0
+        yaw = math.atan2(-float(rotation[0, 1]), float(rotation[1, 1]))
+    return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+
+
+def orientation_label(axis: np.ndarray) -> tuple[str, float]:
+    vertical_component = min(1.0, max(-1.0, abs(float(axis[2]))))
+    tilt_degrees = math.degrees(math.acos(vertical_component))
+    if tilt_degrees <= ORIENTATION_VERTICAL_DEGREES:
+        label = "Vertical"
+    elif tilt_degrees >= ORIENTATION_HORIZONTAL_DEGREES:
+        label = "Horizontal"
+    else:
+        label = "Tilted"
+    return label, tilt_degrees
 
 
 def osm_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float]:
@@ -584,8 +994,6 @@ class GroundStationMonitorApp(tk.Tk):
         self.gps_point_markers: list[Any] = []
         self.gps_point_icon = self._make_gps_point_icon()
         self.gps_map_centered = False
-        self.apogee_detector = ApogeeDetector()
-        self.alert_config = self._load_alert_config()
         self._build_ui()
         self._apply_theme(redraw=False)
         self.after(100, self._drain_events)
@@ -666,7 +1074,6 @@ class GroundStationMonitorApp(tk.Tk):
         self.replay_stop_button.pack(side="left", padx=2)
         self.reset_session_button = ttk.Button(action_row, text="Reset Session", command=self._reset_session)
         self.reset_session_button.pack(side="left", padx=4)
-        ttk.Button(action_row, text="Alert Settings", command=self._show_alert_settings).pack(side="left", padx=2)
         self.theme_button = ttk.Button(action_row, textvariable=self.theme_button_var, command=self._toggle_theme)
         self.theme_button.pack(side="left", padx=2)
 
@@ -747,7 +1154,6 @@ class GroundStationMonitorApp(tk.Tk):
             )
         self.timeline_tree = self._make_tree(event_frame, ("time", "event"), height=4)
         self.timeline_tree.pack(fill="x", pady=(0, 4))
-        ttk.Button(side, text="Export Merged CSV", command=self._export_merged_csv).pack(fill="x", pady=4)
         self.merged_tree = self._make_tree(side, ("millis", "source", "alt_baro", "voltage", "rssi"))
         self.merged_tree.pack(fill="both", expand=True, pady=8)
 
@@ -1131,18 +1537,11 @@ class GroundStationMonitorApp(tk.Tk):
 
     def _connect_port(self, source: str) -> None:
         port = self.port_vars[source].get().strip()
-        if not port:
-            self.status_vars[source].set("error: empty port")
-            self.summary_var.set(f"{source}: port field empty")
-            return
-
         try:
             baud = int(self.baud_vars[source].get().strip())
-            if not (9600 <= baud <= 921600):
-                raise ValueError("out of range")
         except ValueError:
-            self.status_vars[source].set("error: invalid baud")
-            self.summary_var.set(f"{source}: baud must be 9600-921600")
+            self.status_vars[source].set("invalid baud")
+            self.summary_var.set(f"{source}: invalid baud")
             return
         self.reader_generations[source] += 1
         generation = self.reader_generations[source]
@@ -1271,7 +1670,6 @@ class GroundStationMonitorApp(tk.Tk):
         self.orientation_view_elev = ORIENTATION_VIEW_ELEV
         self.orientation_view_azim = ORIENTATION_VIEW_AZIM
         self.orientation_drag_start = None
-        self.apogee_detector = ApogeeDetector()
         self.merge_status_var.set("No merged packets")
         self.readout_var.set("Lat/Lon: --\nSats: --\nVoltage: --\nCurrent: --\nWatt: --\nRSSI: --")
         self.merged_tree.delete(*self.merged_tree.get_children())
@@ -1307,39 +1705,6 @@ class GroundStationMonitorApp(tk.Tk):
         if self.log_writer is not None:
             self.log_writer.write_event(name)
         self.summary_var.set(f"Event: {name}")
-
-    def _export_merged_csv(self) -> None:
-        if not self.merged_log_packets:
-            self.summary_var.set("No data to export")
-            return
-
-        default_name = f"merged_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        path = filedialog.asksaveasfilename(
-            title="Export Merged CSV",
-            initialdir=str(DATA_DIR),
-            initialfile=default_name,
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-
-        if not path:
-            return
-
-        try:
-            with open(path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['time', 'millis', 'lat', 'lon', 'alt_gps', 'sats', 'alt_baro', 'temp', 'pressure',
-                               'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'qw', 'qx', 'qy', 'qz',
-                               'high_ax', 'high_ay', 'high_az', 'voltage', 'current', 'watt', 'source', 'rssi', 'snr'])
-                for packet in self.merged_log_packets:
-                    rssi = "" if packet.rssi is None else str(packet.rssi)
-                    snr = "" if packet.snr is None else f"{packet.snr:.2f}"
-                    row = [datetime.fromtimestamp(packet.arrival_time).isoformat(timespec='seconds')] + packet.csv_values() + [packet.source, rssi, snr]
-                    writer.writerow(row)
-
-            self.summary_var.set(f"Exported {len(self.merged_log_packets)} packets to {Path(path).name}")
-        except Exception as exc:
-            self.summary_var.set(f"Export failed: {exc}")
 
     def _drain_events(self) -> None:
         processed = 0
@@ -1458,85 +1823,6 @@ class GroundStationMonitorApp(tk.Tk):
         if replaced_visible_packet:
             self._update_merge_view(display_packet=packet, rebuild_tree=True)
 
-
-    def _show_alert_settings(self) -> None:
-        dialog = tk.Toplevel(self)
-        dialog.title("Alert Thresholds")
-        dialog.geometry("350x200")
-        dialog.transient(self)
-
-        entries = {}
-        for idx, (key, label, unit) in enumerate([
-            ('low_voltage_threshold', 'Low Voltage', 'V'),
-            ('weak_rssi_threshold', 'Weak RSSI', 'dBm'),
-            ('stale_packet_seconds', 'Stale Packet', 's'),
-            ('malformed_burst_threshold', 'Malformed Burst', 'count'),
-        ]):
-            ttk.Label(dialog, text=f"{label} ({unit}):").grid(row=idx, column=0, sticky='e', padx=10, pady=5)
-            entry = ttk.Entry(dialog, width=12)
-            entry.insert(0, str(getattr(self.alert_config, key)))
-            entry.grid(row=idx, column=1, sticky='w', padx=10, pady=5)
-            entries[key] = entry
-
-        def apply():
-            try:
-                self.alert_config = AlertConfig(
-                    low_voltage_threshold=float(entries['low_voltage_threshold'].get()),
-                    weak_rssi_threshold=int(entries['weak_rssi_threshold'].get()),
-                    stale_packet_seconds=float(entries['stale_packet_seconds'].get()),
-                    malformed_burst_threshold=int(entries['malformed_burst_threshold'].get()),
-                )
-                self._save_alert_config()
-                dialog.destroy()
-                self.summary_var.set("Alert thresholds updated")
-            except ValueError as exc:
-                self.summary_var.set(f"Invalid alert config: {exc}")
-
-        def reset():
-            self.alert_config = AlertConfig()
-            dialog.destroy()
-            self._save_alert_config()
-            self.summary_var.set("Alert thresholds reset to defaults")
-
-        ttk.Button(dialog, text="Apply", command=apply).grid(row=4, column=0, padx=10, pady=10)
-        ttk.Button(dialog, text="Reset Defaults", command=reset).grid(row=4, column=1, padx=10, pady=10)
-
-    def _save_alert_config(self) -> None:
-        import json
-        config_path = Path.home() / '.duck2dragon_alerts.json'
-        try:
-            with open(config_path, 'w') as f:
-                json.dump(self.alert_config.to_dict(), f, indent=2)
-        except Exception:
-            pass
-
-    def _load_alert_config(self) -> AlertConfig:
-        import json
-        config_path = Path.home() / '.duck2dragon_alerts.json'
-        try:
-            with open(config_path, 'r') as f:
-                return AlertConfig.from_dict(json.load(f))
-        except Exception:
-            return AlertConfig()
-
-
-def calculate_packet_loss(state: PortState) -> tuple[int, float]:
-    """Return (expected_count, loss_percent)."""
-    if not state.latest_packet or state.first_packet_millis is None:
-        return 0, 0.0
-
-    first_millis = state.first_packet_millis
-    last_millis = state.latest_packet.millis
-    span_seconds = (last_millis - first_millis) / 1000.0
-    expected = int(span_seconds * 10)
-
-    if expected == 0:
-        return 0, 0.0
-
-    received = state.packet_count
-    loss_percent = max(0.0, (expected - received) / expected * 100)
-    return expected, loss_percent
-
     def _update_port_view(
         self,
         source: str,
@@ -1547,7 +1833,7 @@ def calculate_packet_loss(state: PortState) -> tuple[int, float]:
         state = self.port_states[source]
         packet = state.latest_packet
         detail_var = getattr(self, f"{source}_detail_var")
-        alerts_text = ", ".join(sorted(evaluate_port_alerts(state, now, config=self.alert_config))) or "none"
+        alerts_text = ", ".join(sorted(evaluate_port_alerts(state, now))) or "none"
         raw_line = self._display_raw_line(state.latest_raw_line)
         rssi_text = state.latest_rssi if state.latest_rssi is not None else "--"
         snr_text = f"{state.latest_snr:.2f}" if state.latest_snr is not None else "--"
@@ -1564,14 +1850,9 @@ def calculate_packet_loss(state: PortState) -> tuple[int, float]:
                 f"Alerts: {alerts_text}"
             )
             return
-        expected, loss_pct = self.calculate_packet_loss(state)
-        if expected > 0:
-            packet_line = f"Packets: {state.packet_count} / ~{expected} ({loss_pct:.1f}% loss)  Malformed: {state.malformed_count}"
-        else:
-            packet_line = f"Packets: {state.packet_count}  Malformed: {state.malformed_count}"
         detail_var.set(
             f"{source}: {state.status}\n"
-            f"{packet_line}\n"
+            f"Packets: {state.packet_count}  Malformed: {state.malformed_count}\n"
             f"Alt: {packet.alt_baro:.2f} m  Voltage: {packet.voltage:.3f} V  "
             f"RSSI: {packet.rssi if packet.rssi is not None else '--'}  "
             f"SNR: {packet_snr_text}\n"
@@ -1634,11 +1915,9 @@ def calculate_packet_loss(state: PortState) -> tuple[int, float]:
         if not self.merged_packets:
             return
         packet = display_packet or self.merged_packets[-1]
-        if self.apogee_detector.update(packet):
-            self._record_event(f"Apogee ({self.apogee_detector.apogee_altitude:.1f}m)")
         self.orientation_packet = packet
         self._refresh_orientation_model(packet)
-        alerts = evaluate_alerts(packet, config=self.alert_config)
+        alerts = evaluate_alerts(packet)
         self.merge_status_var.set(f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}")
         self.readout_var.set(
             f"Lat/Lon: {packet.lat:.6f}, {packet.lon:.6f}\n"
@@ -1879,7 +2158,7 @@ def calculate_packet_loss(state: PortState) -> tuple[int, float]:
             self._update_port_view(source, now=current_time, refresh_charts=False)
         if self.merged_packets:
             packet = self.merged_packets[-1]
-            alerts = evaluate_alerts(packet, current_time, config=self.alert_config)
+            alerts = evaluate_alerts(packet, current_time)
             self.merge_status_var.set(
                 f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}"
             )
