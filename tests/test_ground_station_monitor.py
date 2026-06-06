@@ -950,6 +950,24 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["voltage"][1].lines), 1)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["rssi"][1].lines), 2)
 
+    def test_theme_toggle_switches_button_label_and_chart_colors(self):
+        app = self.make_app(charts=True)
+
+        self.assertEqual(app.theme_name, "light")
+        self.assertEqual(app.theme_button_var.get(), "Dark Mode")
+
+        app._toggle_theme()
+
+        dark_colors = self.monitor.THEME_COLORS["dark"]
+        self.assertEqual(app.theme_name, "dark")
+        self.assertEqual(app.theme_button_var.get(), "Light Mode")
+        self.assertEqual(app.alt_fig.get_facecolor(), self.monitor.Figure(facecolor=dark_colors["chart_bg"]).get_facecolor())
+
+        app._toggle_theme()
+
+        self.assertEqual(app.theme_name, "light")
+        self.assertEqual(app.theme_button_var.get(), "Dark Mode")
+
     def test_merge_link_chart_refreshes_for_non_selected_duplicate_packets(self):
         app = self.make_app(charts=True)
 

@@ -49,6 +49,38 @@ OSM_TILE_USER_AGENT = "Duck2DragonMonitor/1.0"
 OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
 OsmTileKey = tuple[int, int, int]
 OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
+THEME_COLORS = {
+    "light": {
+        "bg": "#f8fafc",
+        "panel": "#ffffff",
+        "fg": "#0f172a",
+        "muted": "#475569",
+        "field": "#ffffff",
+        "border": "#cbd5e1",
+        "button": "#e2e8f0",
+        "button_active": "#cbd5e1",
+        "select": "#dbeafe",
+        "select_fg": "#0f172a",
+        "chart_bg": "#ffffff",
+        "chart_axis": "#ffffff",
+        "grid": "#cbd5e1",
+    },
+    "dark": {
+        "bg": "#111827",
+        "panel": "#1f2937",
+        "fg": "#f8fafc",
+        "muted": "#cbd5e1",
+        "field": "#0f172a",
+        "border": "#475569",
+        "button": "#374151",
+        "button_active": "#4b5563",
+        "select": "#1d4ed8",
+        "select_fg": "#ffffff",
+        "chart_bg": "#111827",
+        "chart_axis": "#1f2937",
+        "grid": "#475569",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -754,6 +786,13 @@ class GroundStationMonitorApp(tk.Tk):
         self.use_interactive_gps_map = (
             tkintermapview is not None if use_interactive_map is None else bool(use_interactive_map and tkintermapview)
         )
+        self.theme_name = "light"
+        self.theme_button_var = tk.StringVar(value="Dark Mode")
+        self.style = ttk.Style(self)
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
         self.event_queue: queue.Queue = queue.Queue()
         self.port_states = {"port1": PortState("port1"), "port2": PortState("port2")}
         self.merge_buffer = MergeBuffer()
@@ -780,6 +819,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.gps_track_path: Any = None
         self.gps_map_centered = False
         self._build_ui()
+        self._apply_theme(redraw=False)
         self.after(100, self._drain_events)
 
     def _build_ui(self) -> None:
@@ -853,6 +893,8 @@ class GroundStationMonitorApp(tk.Tk):
         self.replay_pause_button.grid(row=0, column=16, padx=2)
         self.replay_stop_button = ttk.Button(frame, text="Stop Replay", command=self._stop_replay)
         self.replay_stop_button.grid(row=0, column=17, padx=2)
+        self.theme_button = ttk.Button(frame, textvariable=self.theme_button_var, command=self._toggle_theme)
+        self.theme_button.grid(row=0, column=21, padx=2)
         self._refresh_ports()
 
     def _build_tabs(self) -> None:
@@ -958,6 +1000,7 @@ class GroundStationMonitorApp(tk.Tk):
         axis.set_xlabel("sample")
         axis.set_ylabel(ylabel)
         axis.grid(True, alpha=0.3)
+        self._style_axis(axis)
         canvas = FigureCanvasTkAgg(figure, master=parent)
         canvas.get_tk_widget().pack(fill="both", expand=True)
         return figure, axis, canvas
@@ -968,6 +1011,110 @@ class GroundStationMonitorApp(tk.Tk):
             tree.heading(column, text=column)
             tree.column(column, width=90, anchor="center")
         return tree
+
+    def _toggle_theme(self) -> None:
+        self.theme_name = "dark" if self.theme_name == "light" else "light"
+        self.theme_button_var.set("Light Mode" if self.theme_name == "dark" else "Dark Mode")
+        self._apply_theme(redraw=True)
+
+    def _apply_theme(self, redraw: bool = True) -> None:
+        colors = THEME_COLORS[self.theme_name]
+        self.configure(bg=colors["bg"])
+        self.style.configure(".", background=colors["bg"], foreground=colors["fg"], fieldbackground=colors["field"])
+        self.style.configure("TFrame", background=colors["bg"])
+        self.style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
+        self.style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"], bordercolor=colors["border"])
+        self.style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"])
+        self.style.configure("TNotebook", background=colors["bg"], borderwidth=0)
+        self.style.configure("TNotebook.Tab", background=colors["button"], foreground=colors["fg"], padding=(10, 4))
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", colors["panel"]), ("active", colors["button_active"])],
+            foreground=[("selected", colors["fg"]), ("active", colors["fg"])],
+        )
+        self.style.configure("TButton", background=colors["button"], foreground=colors["fg"], bordercolor=colors["border"])
+        self.style.map(
+            "TButton",
+            background=[("active", colors["button_active"]), ("pressed", colors["button_active"])],
+            foreground=[("disabled", colors["muted"]), ("active", colors["fg"])],
+        )
+        self.style.configure(
+            "TEntry",
+            fieldbackground=colors["field"],
+            foreground=colors["fg"],
+            insertcolor=colors["fg"],
+            bordercolor=colors["border"],
+        )
+        self.style.configure(
+            "TCombobox",
+            fieldbackground=colors["field"],
+            foreground=colors["fg"],
+            background=colors["field"],
+            arrowcolor=colors["fg"],
+            bordercolor=colors["border"],
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", colors["field"])],
+            foreground=[("readonly", colors["fg"])],
+            selectbackground=[("readonly", colors["select"])],
+            selectforeground=[("readonly", colors["select_fg"])],
+        )
+        self.style.configure(
+            "Treeview",
+            background=colors["field"],
+            fieldbackground=colors["field"],
+            foreground=colors["fg"],
+            bordercolor=colors["border"],
+        )
+        self.style.configure("Treeview.Heading", background=colors["button"], foreground=colors["fg"])
+        self.style.map(
+            "Treeview",
+            background=[("selected", colors["select"])],
+            foreground=[("selected", colors["select_fg"])],
+        )
+        if redraw:
+            self._style_all_figures()
+
+    def _style_all_figures(self) -> None:
+        for axis, canvas in self._figure_axes():
+            self._style_axis(axis)
+            self._style_legend(axis)
+            canvas.draw_idle()
+
+    def _figure_axes(self) -> Iterable[tuple[Any, Any]]:
+        if hasattr(self, "gps_ax"):
+            yield self.gps_ax, self.gps_canvas
+        if hasattr(self, "alt_ax"):
+            yield self.alt_ax, self.alt_canvas
+        if hasattr(self, "link_ax"):
+            yield self.link_ax, self.link_canvas
+        for source in ("port1", "port2"):
+            figures = getattr(self, f"{source}_figures", {})
+            for _figure, axis, canvas in figures.values():
+                yield axis, canvas
+
+    def _style_axis(self, axis) -> None:
+        colors = THEME_COLORS[self.theme_name]
+        axis.figure.set_facecolor(colors["chart_bg"])
+        axis.set_facecolor(colors["chart_axis"])
+        axis.title.set_color(colors["fg"])
+        axis.xaxis.label.set_color(colors["fg"])
+        axis.yaxis.label.set_color(colors["fg"])
+        axis.tick_params(colors=colors["muted"])
+        for spine in axis.spines.values():
+            spine.set_color(colors["border"])
+        axis.grid(True, alpha=0.35, color=colors["grid"])
+
+    def _style_legend(self, axis) -> None:
+        colors = THEME_COLORS[self.theme_name]
+        legend = axis.get_legend()
+        if legend is None:
+            return
+        legend.get_frame().set_facecolor(colors["panel"])
+        legend.get_frame().set_edgecolor(colors["border"])
+        for text in legend.get_texts():
+            text.set_color(colors["fg"])
 
     def _refresh_ports(self) -> None:
         ports = list_serial_ports()
@@ -1328,6 +1475,8 @@ class GroundStationMonitorApp(tk.Tk):
             self.alt_ax.plot([packet.alt_baro for packet in packets], label="baro")
             self.alt_ax.plot([packet.alt_gps for packet in packets], label="gps")
             self.alt_ax.legend(loc="upper left")
+        self._style_axis(self.alt_ax)
+        self._style_legend(self.alt_ax)
         self.alt_canvas.draw_idle()
 
         self.link_ax.clear()
@@ -1348,6 +1497,8 @@ class GroundStationMonitorApp(tk.Tk):
                 plotted = True
         if plotted:
             self.link_ax.legend(loc="lower left")
+        self._style_axis(self.link_ax)
+        self._style_legend(self.link_ax)
         self.link_canvas.draw_idle()
 
     def _refresh_static_gps_map(self, gps_packets: list[TelemetryPacket]) -> None:
@@ -1378,6 +1529,8 @@ class GroundStationMonitorApp(tk.Tk):
         else:
             self.gps_ax.text(0.5, 0.5, "No GPS lock", ha="center", va="center", transform=self.gps_ax.transAxes)
             self.gps_map_status_var.set("Map: waiting for GPS fix")
+        self._style_axis(self.gps_ax)
+        self._style_legend(self.gps_ax)
         self.gps_canvas.draw_idle()
 
     def _refresh_interactive_gps_map(self, gps_packets: list[TelemetryPacket]) -> None:
@@ -1466,6 +1619,8 @@ class GroundStationMonitorApp(tk.Tk):
                     plotted = True
             if plotted and len(plot_series) > 1:
                 axis.legend(loc="best")
+            self._style_axis(axis)
+            self._style_legend(axis)
             canvas.draw_idle()
 
     def _mark_merge_charts_dirty(self) -> None:
