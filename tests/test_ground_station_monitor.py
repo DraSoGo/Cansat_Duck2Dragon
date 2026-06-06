@@ -360,13 +360,13 @@ class LogWriterTests(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
-    def packet(self):
+    def packet(self, arrival_time=1000.0):
         line = (
             "128518,8.367500,100.043922,-1.80,12,56.02,24.98,1006.54,"
             "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
             "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.684,-90.500,-0.333"
         )
-        return self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, 1000.0)
+        return self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, arrival_time)
 
     def test_log_writer_creates_four_session_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -388,25 +388,31 @@ class LogWriterTests(unittest.TestCase):
     def test_raw_log_preserves_malformed_and_comment_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
-            writer.write_raw("port1", "# RSSI=-61 SNR=11.75")
-            writer.write_raw("port1", "malformed,line")
+            writer.write_raw("port1", "# RSSI=-61 SNR=11.75", arrival_time=1000.0)
+            writer.write_raw("port1", "malformed,line", arrival_time=1001.0)
             writer.close()
 
-            text = (pathlib.Path(tmp) / "session_port1.csv").read_text()
+            with (pathlib.Path(tmp) / "session_port1.csv").open(newline="") as file_obj:
+                rows = list(csv.reader(file_obj))
 
-        self.assertIn("# RSSI=-61 SNR=11.75", text)
-        self.assertIn("malformed,line", text)
+        self.assertEqual(rows[1], ["time", "raw_line"])
+        self.assertEqual(rows[2][1], "# RSSI=-61 SNR=11.75")
+        self.assertEqual(rows[3][1], "malformed,line")
+        self.assertNotEqual(rows[2][0], "")
 
     def test_merged_log_includes_source_and_link_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             writer = self.monitor.LogWriter(pathlib.Path(tmp), session_id="session")
-            writer.write_merged(self.packet())
+            writer.write_merged(self.packet(arrival_time=1000.0))
             writer.close()
 
-            text = (pathlib.Path(tmp) / "session_merged.csv").read_text()
+            with (pathlib.Path(tmp) / "session_merged.csv").open(newline="") as file_obj:
+                rows = list(csv.DictReader(line for line in file_obj if not line.startswith("#")))
 
-        self.assertIn("source,rssi,snr", text)
-        self.assertIn("port1,-61,11.75", text)
+        self.assertEqual(rows[0]["source"], "port1")
+        self.assertEqual(rows[0]["rssi"], "-61")
+        self.assertEqual(rows[0]["snr"], "11.75")
+        self.assertEqual(rows[0]["time"], "1970-01-01T07:16:40")
 
     def test_events_log_includes_session_start_header(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -454,6 +460,48 @@ class ReplayReaderTests(unittest.TestCase):
         self.assertEqual(first["source"], "port1")
         self.assertEqual(first["line"], "# RSSI=-61 SNR=11.75")
         self.assertEqual(second["line"], "1,2,3")
+
+    def test_replay_reader_strips_saved_log_time_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "saved.csv"
+            path.write_text(
+                "# session start 2026-06-06T16:12:00\n"
+                "time,raw_line\n"
+                "2026-06-06T16:12:01,# RSSI=-61 SNR=11.75\n"
+                "2026-06-06T16:12:02,\"1,2,3\"\n"
+            )
+            events = queue.Queue()
+
+            reader = self.monitor.ReplayReader(path, "port1", events, speed=99.0)
+            reader.run_once_for_test()
+
+            first = events.get_nowait()
+            second = events.get_nowait()
+
+        self.assertEqual(first["line"], "# RSSI=-61 SNR=11.75")
+        self.assertEqual(second["line"], "1,2,3")
+
+    def test_replay_reader_strips_merged_log_time_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "merged.csv"
+            telemetry = (
+                "128518,8.367500,100.043922,-1.80,12,56.02,24.98,1006.54,"
+                "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+                "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.684,-90.500,-0.333"
+            )
+            path.write_text(
+                "# session start 2026-06-06T16:12:00\n"
+                f"time,{self.monitor.CSV_HEADER},source,rssi,snr\n"
+                f"2026-06-06T16:12:02,{telemetry},port1,-61,11.75\n"
+            )
+            events = queue.Queue()
+
+            reader = self.monitor.ReplayReader(path, "port1", events, speed=99.0)
+            reader.run_once_for_test()
+
+            event = events.get_nowait()
+
+        self.assertEqual(event["line"], telemetry)
 
     def test_replay_reader_skip_empty_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -837,7 +885,7 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app = self.make_app()
 
         class DummyLogWriter:
-            def write_raw(self, source, line):
+            def write_raw(self, source, line, arrival_time=None):
                 pass
 
             def write_merged(self, packet):
@@ -1444,7 +1492,7 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app = self.make_app()
 
         class DummyLogWriter:
-            def write_raw(self, source, line):
+            def write_raw(self, source, line, arrival_time=None):
                 pass
 
             def write_merged(self, packet):

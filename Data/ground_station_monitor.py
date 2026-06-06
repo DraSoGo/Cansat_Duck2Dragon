@@ -32,6 +32,9 @@ CSV_HEADER = (
 )
 CSV_FIELDS = CSV_HEADER.split(",")
 CSV_FIELD_COUNT = len(CSV_FIELDS)
+LOG_TIME_FIELD = "time"
+RAW_LOG_HEADER = f"{LOG_TIME_FIELD},raw_line"
+MERGED_LOG_HEADER = f"{LOG_TIME_FIELD},{CSV_HEADER},source,rssi,snr"
 DEFAULT_BAUD = 115200
 DEFAULT_PORT_1 = "/dev/ttyACM0"
 DEFAULT_PORT_2 = "/dev/ttyUSB0"
@@ -395,36 +398,31 @@ class LogWriter:
     def _write_headers(self) -> None:
         for source in ("port1", "port2"):
             self.files[source].write(f"# session start {self.started}\n")
-            self.files[source].write(f"# {CSV_HEADER}\n")
+            self.files[source].write(f"{RAW_LOG_HEADER}\n")
         self._write_merged_header(self.files["merged"])
         self.files["events"].write(f"# session start {self.started}\n")
         self.files["events"].write("timestamp,event,note\n")
 
     def _write_merged_header(self, file_obj) -> None:
         file_obj.write(f"# session start {self.started}\n")
-        file_obj.write(f"{CSV_HEADER},source,rssi,snr\n")
+        file_obj.write(f"{MERGED_LOG_HEADER}\n")
 
-    def write_raw(self, source: str, line: str) -> None:
+    def write_raw(self, source: str, line: str, arrival_time: Optional[float] = None) -> None:
         if source not in ("port1", "port2"):
             raise ValueError(f"invalid raw log source: {source}")
-        self.files[source].write(line.rstrip("\r\n") + "\n")
+        csv.writer(self.files[source]).writerow([self._format_log_time(arrival_time), line.rstrip("\r\n")])
 
     def write_merged(self, packet: TelemetryPacket) -> None:
-        rssi = "" if packet.rssi is None else str(packet.rssi)
-        snr = "" if packet.snr is None else f"{packet.snr:.2f}"
-        row = packet.csv_values() + [packet.source, rssi, snr]
-        self.files["merged"].write(",".join(row) + "\n")
+        csv.writer(self.files["merged"]).writerow(self._merged_row(packet))
 
     def rewrite_merged(self, packets: Iterable[TelemetryPacket]) -> None:
         merged_path = self._path("merged")
         tmp_path = merged_path.with_suffix(merged_path.suffix + ".tmp")
         with open(tmp_path, "w", newline="") as file_obj:
             self._write_merged_header(file_obj)
+            writer = csv.writer(file_obj)
             for packet in packets:
-                rssi = "" if packet.rssi is None else str(packet.rssi)
-                snr = "" if packet.snr is None else f"{packet.snr:.2f}"
-                row = packet.csv_values() + [packet.source, rssi, snr]
-                file_obj.write(",".join(row) + "\n")
+                writer.writerow(self._merged_row(packet))
         self.files["merged"].close()
         try:
             tmp_path.replace(merged_path)
@@ -441,6 +439,16 @@ class LogWriter:
         safe_event = event.replace("\n", " ").replace("\r", " ")
         safe_note = note.replace("\n", " ").replace("\r", " ")
         csv.writer(self.files["events"]).writerow([timestamp, safe_event, safe_note])
+
+    def _merged_row(self, packet: TelemetryPacket) -> list[str]:
+        rssi = "" if packet.rssi is None else str(packet.rssi)
+        snr = "" if packet.snr is None else f"{packet.snr:.2f}"
+        return [self._format_log_time(packet.arrival_time)] + packet.csv_values() + [packet.source, rssi, snr]
+
+    def _format_log_time(self, timestamp: Optional[float] = None) -> str:
+        if timestamp is None:
+            return datetime.now().isoformat(timespec="seconds")
+        return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
 
     def close(self) -> None:
         for file_obj in self.files.values():
@@ -511,8 +519,37 @@ class ReplayReader:
         with open(self.path, "r", encoding="utf-8", errors="replace") as file_obj:
             for raw in file_obj:
                 line = raw.rstrip("\r\n")
-                if line:
-                    yield line
+                if not line:
+                    continue
+                replay_line = self._normalise_replay_line(line)
+                if replay_line:
+                    yield replay_line
+
+    def _normalise_replay_line(self, line: str) -> Optional[str]:
+        if line.startswith("#"):
+            if line.startswith("# session start") or line.startswith(f"# {CSV_HEADER}"):
+                return None
+            return line
+        try:
+            row = next(csv.reader([line]))
+        except csv.Error:
+            return line
+        if not row:
+            return None
+        if row[0] == LOG_TIME_FIELD:
+            return None
+        if len(row) == 2 and self._looks_like_log_time(row[0]):
+            return row[1]
+        if len(row) >= CSV_FIELD_COUNT + 1 and self._looks_like_log_time(row[0]):
+            return ",".join(row[1 : 1 + CSV_FIELD_COUNT])
+        return line
+
+    def _looks_like_log_time(self, value: str) -> bool:
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            return False
+        return True
 
     def _line_delay(self) -> float:
         return min(0.5, max(0.005, 0.05 / self.speed))
@@ -1295,7 +1332,7 @@ class GroundStationMonitorApp(tk.Tk):
         state = self.port_states[source]
         state.record_raw(line, arrival_time)
         if self.log_writer is not None:
-            self.log_writer.write_raw(source, line)
+            self.log_writer.write_raw(source, line, arrival_time)
         if "#" in line:
             rssi, snr = TelemetryParser.parse_link_comment(line)
             state.record_link(rssi, snr)
