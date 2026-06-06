@@ -801,7 +801,7 @@ class GroundStationMonitorAppTests(unittest.TestCase):
 
     def make_app(self, charts=False):
         try:
-            app = self.monitor.GroundStationMonitorApp()
+            app = self.monitor.GroundStationMonitorApp(use_interactive_map=False)
         except self.monitor.tk.TclError as exc:
             self.skipTest(f"Tk display unavailable: {exc}")
         app._request_osm_tiles = lambda tile_key: app.osm_tile_requests.add(tile_key)
@@ -818,9 +818,9 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         except self.monitor.tk.TclError:
             pass
 
-    def packet_line(self, millis=128518, voltage=3.684):
+    def packet_line(self, millis=128518, voltage=3.684, lat=8.367500, lon=100.043922):
         return (
-            f"{millis},8.367500,100.043922,-1.80,12,56.02,24.98,1006.54,"
+            f"{millis},{lat:.6f},{lon:.6f},-1.80,12,56.02,24.98,1006.54,"
             "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
             f"1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,{voltage:.3f},-90.500,-0.333"
         )
@@ -1021,6 +1021,80 @@ class GroundStationMonitorAppTests(unittest.TestCase):
 
         self.assertEqual(len(app.gps_ax.images), 1)
         self.assertIn("Map: 1 GPS points, 1 OSM tiles", app.gps_map_status_var.get())
+
+    def test_interactive_gps_map_centers_once_and_extends_path(self):
+        class FakeMarker:
+            def __init__(self, lat, lon, text):
+                self.positions = [(lat, lon)]
+                self.text = text
+
+            def set_position(self, lat, lon):
+                self.positions.append((lat, lon))
+
+        class FakePath:
+            def __init__(self, positions):
+                self.position_lists = [list(positions)]
+
+            def set_position_list(self, positions):
+                self.position_lists.append(list(positions))
+
+        class FakeMapWidget:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.positions = []
+                self.markers = []
+                self.paths = []
+                self.zooms = []
+                FakeMapWidget.instances.append(self)
+
+            def pack(self, *args, **kwargs):
+                pass
+
+            def set_zoom(self, zoom):
+                self.zooms.append(zoom)
+
+            def set_position(self, lat, lon):
+                self.positions.append((lat, lon))
+
+            def set_marker(self, lat, lon, text=None):
+                marker = FakeMarker(lat, lon, text)
+                self.markers.append(marker)
+                return marker
+
+            def set_path(self, positions):
+                path = FakePath(positions)
+                self.paths.append(path)
+                return path
+
+        class FakeTkinterMapViewModule:
+            TkinterMapView = FakeMapWidget
+
+        original_map_module = self.monitor.tkintermapview
+        self.addCleanup(setattr, self.monitor, "tkintermapview", original_map_module)
+        self.monitor.tkintermapview = FakeTkinterMapViewModule
+        try:
+            app = self.monitor.GroundStationMonitorApp(use_interactive_map=True)
+        except self.monitor.tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        self.addCleanup(self.destroy_app, app)
+
+        app.port_states["port1"].record_link(-50, 9.0)
+        app._handle_line("port1", self.packet_line(millis=20, lat=8.367500, lon=100.043922), arrival_time=1000.0)
+        app._refresh_dirty_charts(force=True)
+        app._handle_line("port1", self.packet_line(millis=21, lat=8.367900, lon=100.044500), arrival_time=1001.0)
+        app._refresh_dirty_charts(force=True)
+
+        widget = FakeMapWidget.instances[-1]
+        self.assertEqual(widget.positions, [(8.367500, 100.043922)])
+        self.assertEqual(widget.markers[0].text, "Start")
+        self.assertEqual(widget.markers[1].text, "Current")
+        self.assertEqual(widget.markers[1].positions[-1], (8.367900, 100.044500))
+        self.assertEqual(
+            widget.paths[0].position_lists[-1],
+            [(8.367500, 100.043922), (8.367900, 100.044500)],
+        )
+        self.assertIn("Map: 2 GPS points", app.gps_map_status_var.get())
 
     def test_port_detail_includes_raw_snr_and_log_path(self):
         temp_dir = tempfile.TemporaryDirectory()

@@ -13,11 +13,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, ttk
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+
+try:
+    import tkintermapview
+except Exception:
+    tkintermapview = None
 
 
 CSV_HEADER = (
@@ -741,11 +746,14 @@ class SerialEventQueue:
 
 
 class GroundStationMonitorApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, use_interactive_map: Optional[bool] = None):
         super().__init__()
         self.title("Duck2Dragon Monitor")
         configure_window_icon(self)
         self.geometry("1280x820")
+        self.use_interactive_gps_map = (
+            tkintermapview is not None if use_interactive_map is None else bool(use_interactive_map and tkintermapview)
+        )
         self.event_queue: queue.Queue = queue.Queue()
         self.port_states = {"port1": PortState("port1"), "port2": PortState("port2")}
         self.merge_buffer = MergeBuffer()
@@ -767,6 +775,10 @@ class GroundStationMonitorApp(tk.Tk):
         self.last_chart_refresh = 0.0
         self.osm_layer_cache: dict[tuple[OsmTileKey, ...], list[OsmTileLayer]] = {}
         self.osm_tile_requests: set[tuple[OsmTileKey, ...]] = set()
+        self.gps_start_marker: Any = None
+        self.gps_current_marker: Any = None
+        self.gps_track_path: Any = None
+        self.gps_map_centered = False
         self._build_ui()
         self.after(100, self._drain_events)
 
@@ -878,7 +890,15 @@ class GroundStationMonitorApp(tk.Tk):
         gps_controls.pack(fill="x", padx=4, pady=(4, 0))
         self.gps_map_status_var = tk.StringVar(value="Map: waiting for GPS fix")
         ttk.Label(gps_controls, textvariable=self.gps_map_status_var).pack(side="left")
-        self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_frame, "GPS Track", "relative north")
+        if self.use_interactive_gps_map:
+            self.gps_map_widget = tkintermapview.TkinterMapView(gps_frame, corner_radius=0)
+            self.gps_map_widget.pack(fill="both", expand=True, padx=4, pady=4)
+            self.gps_map_widget.set_zoom(16)
+        else:
+            self.gps_map_widget = None
+            self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_frame, "GPS Track", "relative north")
+            if tkintermapview is None:
+                self.gps_map_status_var.set("Map: install tkintermapview for draggable live map")
 
         lower_charts = ttk.Frame(chart_area)
         lower_charts.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
@@ -1294,34 +1314,10 @@ class GroundStationMonitorApp(tk.Tk):
         packets = self.merged_packets[-100:]
         gps_packets = [packet for packet in packets if packet.gps_valid]
 
-        self.gps_ax.clear()
-        self.gps_ax.set_title("GPS Track")
-        self.gps_ax.grid(True, alpha=0.3)
-        if gps_packets:
-            lons = [packet.lon for packet in gps_packets]
-            lats = [packet.lat for packet in gps_packets]
-            tile_count, tiles_loading = self._draw_osm_tiles(lons, lats)
-            self.gps_ax.plot(lons, lats, color="#2563eb", linewidth=1.8, label="track", zorder=3)
-            self.gps_ax.scatter(lons[0], lats[0], color="#16a34a", edgecolor="white", s=46, label="start", zorder=4)
-            self.gps_ax.scatter(lons[-1], lats[-1], color="#dc2626", edgecolor="white", s=52, label="current", zorder=5)
-            self.gps_ax.annotate(
-                f"{lats[-1]:.6f}, {lons[-1]:.6f}",
-                (lons[-1], lats[-1]),
-                xytext=(8, 8),
-                textcoords="offset points",
-                fontsize=8,
-                zorder=6,
-            )
-            self._fit_gps_axes(lons, lats)
-            self.gps_ax.set_xlabel("longitude")
-            self.gps_ax.set_ylabel("latitude")
-            self.gps_ax.legend(loc="best")
-            loading_text = " loading" if tiles_loading else ""
-            self.gps_map_status_var.set(f"Map: {len(gps_packets)} GPS points, {tile_count} OSM tiles{loading_text}")
+        if self.use_interactive_gps_map:
+            self._refresh_interactive_gps_map(gps_packets)
         else:
-            self.gps_ax.text(0.5, 0.5, "No GPS lock", ha="center", va="center", transform=self.gps_ax.transAxes)
-            self.gps_map_status_var.set("Map: waiting for GPS fix")
-        self.gps_canvas.draw_idle()
+            self._refresh_static_gps_map(gps_packets)
 
         self.alt_ax.clear()
         self.alt_ax.set_title("Altitude")
@@ -1353,6 +1349,60 @@ class GroundStationMonitorApp(tk.Tk):
         if plotted:
             self.link_ax.legend(loc="lower left")
         self.link_canvas.draw_idle()
+
+    def _refresh_static_gps_map(self, gps_packets: list[TelemetryPacket]) -> None:
+        self.gps_ax.clear()
+        self.gps_ax.set_title("GPS Track")
+        self.gps_ax.grid(True, alpha=0.3)
+        if gps_packets:
+            lons = [packet.lon for packet in gps_packets]
+            lats = [packet.lat for packet in gps_packets]
+            tile_count, tiles_loading = self._draw_osm_tiles(lons, lats)
+            self.gps_ax.plot(lons, lats, color="#2563eb", linewidth=1.8, label="track", zorder=3)
+            self.gps_ax.scatter(lons[0], lats[0], color="#16a34a", edgecolor="white", s=46, label="start", zorder=4)
+            self.gps_ax.scatter(lons[-1], lats[-1], color="#dc2626", edgecolor="white", s=52, label="current", zorder=5)
+            self.gps_ax.annotate(
+                f"{lats[-1]:.6f}, {lons[-1]:.6f}",
+                (lons[-1], lats[-1]),
+                xytext=(8, 8),
+                textcoords="offset points",
+                fontsize=8,
+                zorder=6,
+            )
+            self._fit_gps_axes(lons, lats)
+            self.gps_ax.set_xlabel("longitude")
+            self.gps_ax.set_ylabel("latitude")
+            self.gps_ax.legend(loc="best")
+            loading_text = " loading" if tiles_loading else ""
+            self.gps_map_status_var.set(f"Map: {len(gps_packets)} GPS points, {tile_count} OSM tiles{loading_text}")
+        else:
+            self.gps_ax.text(0.5, 0.5, "No GPS lock", ha="center", va="center", transform=self.gps_ax.transAxes)
+            self.gps_map_status_var.set("Map: waiting for GPS fix")
+        self.gps_canvas.draw_idle()
+
+    def _refresh_interactive_gps_map(self, gps_packets: list[TelemetryPacket]) -> None:
+        if not gps_packets:
+            self.gps_map_status_var.set("Map: waiting for GPS fix")
+            return
+        positions = [(packet.lat, packet.lon) for packet in gps_packets]
+        start_lat, start_lon = positions[0]
+        current_lat, current_lon = positions[-1]
+        if not self.gps_map_centered:
+            self.gps_map_widget.set_position(start_lat, start_lon)
+            self.gps_map_centered = True
+        if self.gps_start_marker is None:
+            self.gps_start_marker = self.gps_map_widget.set_marker(start_lat, start_lon, text="Start")
+        if self.gps_current_marker is None:
+            self.gps_current_marker = self.gps_map_widget.set_marker(current_lat, current_lon, text="Current")
+        else:
+            self.gps_current_marker.set_position(current_lat, current_lon)
+        if self.gps_track_path is None:
+            self.gps_track_path = self.gps_map_widget.set_path(positions)
+        else:
+            self.gps_track_path.set_position_list(positions)
+        self.gps_map_status_var.set(
+            f"Map: {len(gps_packets)} GPS points, current {current_lat:.6f}, {current_lon:.6f}"
+        )
 
     def _draw_osm_tiles(self, lons: list[float], lats: list[float]) -> tuple[int, bool]:
         tile_key = tuple(osm_tiles_for_points(lons, lats))

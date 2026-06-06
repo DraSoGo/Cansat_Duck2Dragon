@@ -226,11 +226,11 @@ All received lines are appended to `Data/log.txt`. Press `Ctrl+C` to stop.
 
 ```bash
 cd Data
-python3 -m pip install pyserial matplotlib
+python3 -m pip install pyserial matplotlib tkintermapview
 python3 ground_station_monitor.py
 ```
 
-The GUI is titled **Duck2Dragon Monitor**. It can read two serial ports at once, show `Merge Data`, `Port 1`, and `Port 2` tabs, save raw and merged logs under `Data/logs/`, and replay an existing log without connected hardware.
+The GUI is titled **Duck2Dragon Monitor**. It can read two serial ports at once, show `Merge Data`, `Port 1`, and `Port 2` tabs, save raw and merged logs under `Data/logs/`, show a draggable live GPS map when `tkintermapview` is installed, and replay an existing log without connected hardware.
 
 ---
 
