@@ -585,7 +585,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.gps_point_icon = self._make_gps_point_icon()
         self.gps_map_centered = False
         self.apogee_detector = ApogeeDetector()
-        self.alert_config = AlertConfig()
+        self.alert_config = self._load_alert_config()
         self._build_ui()
         self._apply_theme(redraw=False)
         self.after(100, self._drain_events)
@@ -666,6 +666,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.replay_stop_button.pack(side="left", padx=2)
         self.reset_session_button = ttk.Button(action_row, text="Reset Session", command=self._reset_session)
         self.reset_session_button.pack(side="left", padx=4)
+        ttk.Button(action_row, text="Alert Settings", command=self._show_alert_settings).pack(side="left", padx=2)
         self.theme_button = ttk.Button(action_row, textvariable=self.theme_button_var, command=self._toggle_theme)
         self.theme_button.pack(side="left", padx=2)
 
@@ -1484,7 +1485,7 @@ class GroundStationMonitorApp(tk.Tk):
         state = self.port_states[source]
         packet = state.latest_packet
         detail_var = getattr(self, f"{source}_detail_var")
-        alerts_text = ", ".join(sorted(evaluate_port_alerts(state, now))) or "none"
+        alerts_text = ", ".join(sorted(evaluate_port_alerts(state, now, config=self.alert_config))) or "none"
         raw_line = self._display_raw_line(state.latest_raw_line)
         rssi_text = state.latest_rssi if state.latest_rssi is not None else "--"
         snr_text = f"{state.latest_snr:.2f}" if state.latest_snr is not None else "--"
@@ -1575,7 +1576,7 @@ class GroundStationMonitorApp(tk.Tk):
             self._record_event(f"Apogee ({self.apogee_detector.apogee_altitude:.1f}m)")
         self.orientation_packet = packet
         self._refresh_orientation_model(packet)
-        alerts = evaluate_alerts(packet)
+        alerts = evaluate_alerts(packet, config=self.alert_config)
         self.merge_status_var.set(f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}")
         self.readout_var.set(
             f"Lat/Lon: {packet.lat:.6f}, {packet.lon:.6f}\n"
@@ -1816,10 +1817,70 @@ class GroundStationMonitorApp(tk.Tk):
             self._update_port_view(source, now=current_time, refresh_charts=False)
         if self.merged_packets:
             packet = self.merged_packets[-1]
-            alerts = evaluate_alerts(packet, current_time)
+            alerts = evaluate_alerts(packet, current_time, config=self.alert_config)
             self.merge_status_var.set(
                 f"Merged packets: {self.merged_count}  Alerts: {', '.join(sorted(alerts)) or 'none'}"
             )
+
+    def _show_alert_settings(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Alert Thresholds")
+        dialog.geometry("350x200")
+        dialog.transient(self)
+
+        entries = {}
+        for idx, (key, label, unit) in enumerate([
+            ('low_voltage_threshold', 'Low Voltage', 'V'),
+            ('weak_rssi_threshold', 'Weak RSSI', 'dBm'),
+            ('stale_packet_seconds', 'Stale Packet', 's'),
+            ('malformed_burst_threshold', 'Malformed Burst', 'count'),
+        ]):
+            ttk.Label(dialog, text=f"{label} ({unit}):").grid(row=idx, column=0, sticky='e', padx=10, pady=5)
+            entry = ttk.Entry(dialog, width=12)
+            entry.insert(0, str(getattr(self.alert_config, key)))
+            entry.grid(row=idx, column=1, sticky='w', padx=10, pady=5)
+            entries[key] = entry
+
+        def apply():
+            try:
+                self.alert_config = AlertConfig(
+                    low_voltage_threshold=float(entries['low_voltage_threshold'].get()),
+                    weak_rssi_threshold=int(entries['weak_rssi_threshold'].get()),
+                    stale_packet_seconds=float(entries['stale_packet_seconds'].get()),
+                    malformed_burst_threshold=int(entries['malformed_burst_threshold'].get()),
+                )
+                self._save_alert_config()
+                dialog.destroy()
+                self.summary_var.set("Alert thresholds updated")
+            except ValueError as exc:
+                self.summary_var.set(f"Invalid alert config: {exc}")
+
+        def reset():
+            self.alert_config = AlertConfig()
+            dialog.destroy()
+            self._save_alert_config()
+            self.summary_var.set("Alert thresholds reset to defaults")
+
+        ttk.Button(dialog, text="Apply", command=apply).grid(row=4, column=0, padx=10, pady=10)
+        ttk.Button(dialog, text="Reset Defaults", command=reset).grid(row=4, column=1, padx=10, pady=10)
+
+    def _save_alert_config(self) -> None:
+        import json
+        config_path = Path.home() / '.duck2dragon_alerts.json'
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(self.alert_config.to_dict(), f, indent=2)
+        except Exception:
+            pass
+
+    def _load_alert_config(self) -> AlertConfig:
+        import json
+        config_path = Path.home() / '.duck2dragon_alerts.json'
+        try:
+            with open(config_path, 'r') as f:
+                return AlertConfig.from_dict(json.load(f))
+        except Exception:
+            return AlertConfig()
 
     def destroy(self) -> None:
         for source in list(self.readers):
