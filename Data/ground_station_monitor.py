@@ -584,6 +584,8 @@ class GroundStationMonitorApp(tk.Tk):
         self.gps_point_markers: list[Any] = []
         self.gps_point_icon = self._make_gps_point_icon()
         self.gps_map_centered = False
+        self.apogee_detector = ApogeeDetector()
+        self.alert_config = AlertConfig()
         self._build_ui()
         self._apply_theme(redraw=False)
         self.after(100, self._drain_events)
@@ -1268,6 +1270,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.orientation_view_elev = ORIENTATION_VIEW_ELEV
         self.orientation_view_azim = ORIENTATION_VIEW_AZIM
         self.orientation_drag_start = None
+        self.apogee_detector = ApogeeDetector()
         self.merge_status_var.set("No merged packets")
         self.readout_var.set("Lat/Lon: --\nSats: --\nVoltage: --\nCurrent: --\nWatt: --\nRSSI: --")
         self.merged_tree.delete(*self.merged_tree.get_children())
@@ -1568,6 +1571,8 @@ class GroundStationMonitorApp(tk.Tk):
         if not self.merged_packets:
             return
         packet = display_packet or self.merged_packets[-1]
+        if self.apogee_detector.update(packet):
+            self._record_event(f"Apogee ({self.apogee_detector.apogee_altitude:.1f}m)")
         self.orientation_packet = packet
         self._refresh_orientation_model(packet)
         alerts = evaluate_alerts(packet)
