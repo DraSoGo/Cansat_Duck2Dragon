@@ -1991,3 +1991,48 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(app.port_states["port1"].malformed_count, 2)
         self.assertEqual(len(tree.get_children()), 1)
         self.assertIn("Malformed: 2", app.port1_detail_var.get())
+
+    def test_apogee_detector_integration_records_event_on_detection(self):
+        app = self.make_app()
+
+        # Directly test apogee detector with packets having varying altitudes
+        # Ascending altitude packets
+        for i in range(5):
+            line = (
+                f"{100 + i},8.367500,100.043922,-1.80,12,{50.0 + i * 10.0:.2f},24.98,1006.54,"
+                "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+                "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.700,-90.500,-0.333"
+            )
+            packet = self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, 1000.0 + i * 0.2)
+            detected = app.apogee_detector.update(packet)
+            self.assertFalse(detected)
+
+        # Descending altitude packets to trigger apogee
+        for i in range(5):
+            line = (
+                f"{105 + i},8.367500,100.043922,-1.80,12,{90.0 - i * 5.0:.2f},24.98,1006.54,"
+                "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+                "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.700,-90.500,-0.333"
+            )
+            packet = self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, 1001.0 + i * 0.2)
+            app.apogee_detector.update(packet)
+
+        # Check that apogee was detected
+        self.assertTrue(app.apogee_detector.apogee_detected)
+        self.assertIsNotNone(app.apogee_detector.apogee_altitude)
+
+    def test_apogee_detector_reset_on_session_clear(self):
+        app = self.make_app()
+
+        app.apogee_detector.apogee_detected = True
+        app.apogee_detector.apogee_altitude = 150.0
+        app.apogee_detector.alt_history = [(1000.0, 100.0), (1001.0, 150.0)]
+
+        app._clear_session_data()
+
+        self.assertFalse(app.apogee_detector.apogee_detected)
+        self.assertEqual(len(app.apogee_detector.alt_history), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
