@@ -39,6 +39,15 @@ ORIENTATION_HORIZONTAL_DEGREES = 65.0
 ORIENTATION_IDENTITY_EPS = 1e-4
 
 
+@dataclass
+class AlertConfig:
+    """Alert configuration thresholds (placeholder - full impl in Task 10)."""
+    low_voltage_threshold: float = LOW_VOLTAGE_THRESHOLD
+    weak_rssi_threshold: int = WEAK_RSSI_THRESHOLD
+    stale_packet_seconds: float = STALE_PACKET_SECONDS
+    malformed_burst_threshold: int = MALFORMED_BURST_THRESHOLD
+
+
 @dataclass(frozen=True)
 class TelemetryPacket:
     raw_line: str
@@ -264,3 +273,32 @@ class TelemetryParser:
         if math.isfinite(voltage) and math.isfinite(current):
             return voltage * current / 1000.0
         return math.nan
+
+
+def evaluate_alerts(packet: Optional[TelemetryPacket], now: Optional[float] = None, config: Optional['AlertConfig'] = None) -> set[str]:
+    if packet is None:
+        return {"no_packet"}
+
+    if config is None:
+        config = AlertConfig()
+
+    current_time = time.time() if now is None else now
+    alerts: set[str] = set()
+    if packet.voltage < config.low_voltage_threshold:
+        alerts.add("low_voltage")
+    if packet.rssi is not None and packet.rssi < config.weak_rssi_threshold:
+        alerts.add("weak_rssi")
+    if not packet.gps_valid:
+        alerts.add("no_gps_lock")
+    if current_time - packet.arrival_time > config.stale_packet_seconds:
+        alerts.add("stale_packet")
+    return alerts
+
+
+def evaluate_port_alerts(state: PortState, now: Optional[float] = None, config: Optional['AlertConfig'] = None) -> set[str]:
+    if config is None:
+        config = AlertConfig()
+    alerts = evaluate_alerts(state.latest_packet, now, config)
+    if state.recent_malformed >= config.malformed_burst_threshold:
+        alerts.add("malformed_burst")
+    return alerts
