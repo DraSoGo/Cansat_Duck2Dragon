@@ -889,6 +889,7 @@ class GroundStationMonitorApp(tk.Tk):
         self.dirty_merge_charts = False
         self.dirty_port_charts = {"port1": False, "port2": False}
         self.last_chart_refresh = 0.0
+        self.ui_error_count = 0
         self.osm_layer_cache: dict[tuple[OsmTileKey, ...], list[OsmTileLayer]] = {}
         self.osm_tile_requests: set[tuple[OsmTileKey, ...]] = set()
         self.gps_start_marker: Any = None
@@ -1339,17 +1340,40 @@ class GroundStationMonitorApp(tk.Tk):
 
     def _drain_events(self) -> None:
         processed = 0
-        while processed < EVENT_DRAIN_BATCH_SIZE:
+        try:
+            while processed < EVENT_DRAIN_BATCH_SIZE:
+                try:
+                    event = self.event_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._handle_event(event)
+                except Exception as exc:
+                    self._record_ui_error("event", exc)
+                processed += 1
             try:
-                event = self.event_queue.get_nowait()
-            except queue.Empty:
-                break
-            self._handle_event(event)
-            processed += 1
-        self._update_summary()
-        self._refresh_dirty_charts()
-        delay_ms = 1 if processed == EVENT_DRAIN_BATCH_SIZE and not self.event_queue.empty() else 50
-        self.after(delay_ms, self._drain_events)
+                self._update_summary()
+            except Exception as exc:
+                self._record_ui_error("summary", exc)
+            try:
+                self._refresh_dirty_charts()
+            except Exception as exc:
+                self._record_ui_error("chart", exc)
+        finally:
+            delay_ms = 1 if processed == EVENT_DRAIN_BATCH_SIZE and not self.event_queue.empty() else 50
+            try:
+                self.after(delay_ms, self._drain_events)
+            except tk.TclError:
+                pass
+
+    def _record_ui_error(self, context: str, exc: Exception) -> None:
+        self.ui_error_count += 1
+        message = f"UI recovered from {context} error: {exc}"
+        print(message)
+        try:
+            self.summary_var.set(message)
+        except tk.TclError:
+            pass
 
     def _handle_event(self, event: dict) -> None:
         event_type = event.get("type")

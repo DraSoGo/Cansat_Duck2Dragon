@@ -1016,6 +1016,30 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertIsNone(app.log_writer)
         self.assertIn("Logging stopped", app.summary_var.get())
 
+    def test_event_drain_recovers_from_ui_handler_error(self):
+        app = self.make_app()
+        handled_events = []
+        scheduled = []
+
+        def flaky_handle_event(event):
+            if event["type"] == "boom":
+                raise RuntimeError("bad ui update")
+            handled_events.append(event)
+
+        app._handle_event = flaky_handle_event
+        app._update_summary = lambda: None
+        app._refresh_dirty_charts = lambda: None
+        app.after = lambda delay_ms, callback: scheduled.append((delay_ms, callback))
+        app.event_queue.put({"type": "boom"})
+        app.event_queue.put({"type": "ok"})
+
+        app._drain_events()
+
+        self.assertEqual(handled_events, [{"type": "ok"}])
+        self.assertEqual(app.ui_error_count, 1)
+        self.assertIn("UI recovered from event error", app.summary_var.get())
+        self.assertEqual(scheduled[-1][1], app._drain_events)
+
     def test_chart_figures_are_created_and_refreshed_from_packets(self):
         app = self.make_app(charts=True)
 
