@@ -4,6 +4,7 @@
 import csv
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -156,3 +157,110 @@ class PortState:
         self.recent_malformed += 1
         if arrival_time is not None:
             self.last_seen_time = arrival_time
+
+
+class TelemetryParser:
+    LINK_RE = re.compile(r"RSSI=(-?\d+)\s+SNR=(-?\d+(?:\.\d+)?)")
+    LEADING_INT_RE = re.compile(r"\s*(\d+)")
+
+    @staticmethod
+    def parse_link_comment(line: str) -> tuple[Optional[int], Optional[float]]:
+        match = TelemetryParser.LINK_RE.search(line)
+        if not match:
+            return None, None
+        return int(match.group(1)), float(match.group(2))
+
+    @staticmethod
+    def parse_packet(
+        line: str,
+        source: str,
+        rssi: Optional[int],
+        snr: Optional[float],
+        arrival_time: Optional[float] = None,
+    ) -> TelemetryPacket:
+        parts = TelemetryParser._normalise_fields(line)
+        millis = TelemetryParser._parse_millis(parts[0])
+        voltage = TelemetryParser._float_or_nan(parts[21])
+        current = TelemetryParser._float_or_nan(parts[22])
+        watt = TelemetryParser._parse_watt(parts[23], voltage, current)
+        values = {
+            "millis": millis,
+            "lat": TelemetryParser._float_or_nan(parts[1]),
+            "lon": TelemetryParser._float_or_nan(parts[2]),
+            "alt_gps": TelemetryParser._float_or_nan(parts[3]),
+            "sats": TelemetryParser._int_or_nan(parts[4]),
+            "alt_baro": TelemetryParser._float_or_nan(parts[5]),
+            "temp": TelemetryParser._float_or_nan(parts[6]),
+            "pressure": TelemetryParser._float_or_nan(parts[7]),
+            "ax": TelemetryParser._float_or_nan(parts[8]),
+            "ay": TelemetryParser._float_or_nan(parts[9]),
+            "az": TelemetryParser._float_or_nan(parts[10]),
+            "gx": TelemetryParser._float_or_nan(parts[11]),
+            "gy": TelemetryParser._float_or_nan(parts[12]),
+            "gz": TelemetryParser._float_or_nan(parts[13]),
+            "qw": TelemetryParser._float_or_nan(parts[14]),
+            "qx": TelemetryParser._float_or_nan(parts[15]),
+            "qy": TelemetryParser._float_or_nan(parts[16]),
+            "qz": TelemetryParser._float_or_nan(parts[17]),
+            "high_ax": TelemetryParser._float_or_nan(parts[18]),
+            "high_ay": TelemetryParser._float_or_nan(parts[19]),
+            "high_az": TelemetryParser._float_or_nan(parts[20]),
+            "voltage": voltage,
+            "current": current,
+            "watt": watt,
+        }
+
+        return TelemetryPacket(
+            raw_line=line,
+            source=source,
+            arrival_time=time.time() if arrival_time is None else arrival_time,
+            rssi=rssi,
+            snr=snr,
+            **values,
+        )
+
+    @staticmethod
+    def _normalise_fields(line: str) -> list[str]:
+        data_part = line.split("#", 1)[0].strip()
+        if not data_part:
+            raise ValueError("empty telemetry row")
+        parts = [part.strip() for part in data_part.split(",")]
+        if len(parts) < CSV_FIELD_COUNT:
+            parts.extend([""] * (CSV_FIELD_COUNT - len(parts)))
+        return parts[:CSV_FIELD_COUNT]
+
+    @staticmethod
+    def _parse_millis(value: str) -> int:
+        try:
+            return int(float(value))
+        except ValueError as exc:
+            match = TelemetryParser.LEADING_INT_RE.match(value)
+            if match:
+                return int(match.group(1))
+            raise ValueError(f"invalid millis field: {value!r}") from exc
+
+    @staticmethod
+    def _float_or_nan(value: str) -> float:
+        if value == "":
+            return math.nan
+        try:
+            return float(value)
+        except ValueError:
+            return math.nan
+
+    @staticmethod
+    def _int_or_nan(value: str):
+        if value == "":
+            return math.nan
+        try:
+            return int(float(value))
+        except ValueError:
+            return math.nan
+
+    @staticmethod
+    def _parse_watt(value: str, voltage: float, current: float) -> float:
+        if value:
+            return TelemetryParser._float_or_nan(value)
+        if math.isfinite(voltage) and math.isfinite(current):
+            return voltage * current / 1000.0
+        return math.nan
