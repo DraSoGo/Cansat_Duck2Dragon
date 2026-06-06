@@ -74,8 +74,8 @@ ORIENTATION_CANSAT_STRIPE_COLOR = "#ef4444"
 ORIENTATION_CANSAT_TOP_COLOR = "#f97316"
 ORIENTATION_MODEL_VIEW_LEFT = 0.26
 ORIENTATION_MODEL_VIEW_BOTTOM = 0.04
-ORIENTATION_MODEL_VIEW_WIDTH = 0.70
-ORIENTATION_MODEL_VIEW_HEIGHT = 0.70
+ORIENTATION_MODEL_VIEW_WIDTH = 0.50
+ORIENTATION_MODEL_VIEW_HEIGHT = 0.55
 ORIENTATION_VIEW_ELEV = 20.0
 ORIENTATION_VIEW_AZIM = -45.0
 ORIENTATION_VIEW_DRAG_SENSITIVITY = 0.6
@@ -1300,7 +1300,7 @@ class GroundStationMonitorApp(tk.Tk):
         text_axis.text(
             0.04,
             0.64,
-            f"R {roll:.0f}  P {pitch:.0f}  Y {yaw:.0f}",
+            f"R {roll:.2f}  P {pitch:.2f}  Y {yaw:.2f}",
             transform=text_axis.transAxes,
             color=ORIENTATION_OVERLAY_MUTED_TEXT_COLOR,
             fontsize=6,

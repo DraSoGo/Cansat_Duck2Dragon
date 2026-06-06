@@ -2,3 +2,4 @@ Data/logs
 tests
 .superpowers
 __pycache__
+*.yuna
