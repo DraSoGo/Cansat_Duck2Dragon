@@ -8,14 +8,14 @@ import re
 import threading
 import time
 import tkinter as tk
-import webbrowser
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
-from html import escape
 from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable, Iterable, Optional
 
+import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -33,10 +33,17 @@ DEFAULT_PORT_2 = "/dev/ttyUSB0"
 DATA_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = DATA_DIR.parent / "assets" / "D2D_logo.png"
 LOG_DIR = DATA_DIR / "logs"
-GPS_MAP_PATH = LOG_DIR / "live_gps_map.html"
+OSM_TILE_CACHE_DIR = LOG_DIR / "map_tiles"
 EVENT_DRAIN_BATCH_SIZE = 200
 CHART_REFRESH_INTERVAL_SECONDS = 0.25
-GPS_MAP_REFRESH_INTERVAL_SECONDS = 2.0
+OSM_TILE_SIZE = 256
+OSM_TILE_TIMEOUT_SECONDS = 0.35
+OSM_TILE_RETRY_SECONDS = 60.0
+OSM_MAX_TILES_PER_REFRESH = 9
+OSM_TILE_USER_AGENT = "Duck2DragonMonitor/1.0"
+OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
+OsmTileKey = tuple[int, int, int]
+OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
 
 
 @dataclass(frozen=True)
@@ -513,86 +520,98 @@ def valid_gps_packets(packets: Iterable[TelemetryPacket]) -> list[TelemetryPacke
     return [packet for packet in packets if packet.gps_valid]
 
 
-def write_gps_map_html(
-    packets: Iterable[TelemetryPacket],
-    path: Path = GPS_MAP_PATH,
-    refresh_seconds: float = GPS_MAP_REFRESH_INTERVAL_SECONDS,
+def osm_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float]:
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    lat_rad = math.radians(lat)
+    scale = 2 ** zoom
+    x = (lon + 180.0) / 360.0 * scale
+    y = (1.0 - math.log(math.tan(lat_rad) + (1.0 / math.cos(lat_rad))) / math.pi) / 2.0 * scale
+    return x, y
+
+
+def osm_tile_bounds(x: int, y: int, zoom: int) -> tuple[float, float, float, float]:
+    scale = 2 ** zoom
+    lon_left = x / scale * 360.0 - 180.0
+    lon_right = (x + 1) / scale * 360.0 - 180.0
+    lat_top = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * y / scale))))
+    lat_bottom = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (y + 1) / scale))))
+    return lon_left, lon_right, lat_bottom, lat_top
+
+
+def choose_osm_zoom(
+    lons: list[float],
+    lats: list[float],
+    max_tiles: int = OSM_MAX_TILES_PER_REFRESH,
+    max_zoom: int = 18,
+    min_zoom: int = 1,
 ) -> int:
-    gps_packets = valid_gps_packets(packets)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not gps_packets:
-        path.write_text(_empty_gps_map_html(refresh_seconds), encoding="utf-8")
-        return 0
+    for zoom in range(max_zoom, min_zoom - 1, -1):
+        tiles = osm_tile_range(lons, lats, zoom)
+        if len(tiles) <= max_tiles:
+            return zoom
+    return min_zoom
 
-    rows = [
-        {
-            "millis": packet.millis,
-            "source": packet.source,
-            "lat": packet.lat,
-            "lon": packet.lon,
-            "alt_gps": packet.alt_gps,
-            "alt_baro": packet.alt_baro,
-            "sats": packet.sats,
-            "rssi": packet.rssi,
-            "snr": packet.snr,
-        }
-        for packet in gps_packets
-    ]
+
+def osm_tiles_for_points(lons: list[float], lats: list[float]) -> list[OsmTileKey]:
+    if not lons or not lats:
+        return []
+    zoom = choose_osm_zoom(lons, lats)
+    return osm_tile_range(lons, lats, zoom)[:OSM_MAX_TILES_PER_REFRESH]
+
+
+def osm_tile_range(lons: list[float], lats: list[float], zoom: int) -> list[tuple[int, int, int]]:
+    min_x, min_y = osm_tile_xy(max(lats), min(lons), zoom)
+    max_x, max_y = osm_tile_xy(min(lats), max(lons), zoom)
+    scale = (2 ** zoom) - 1
+    x0 = max(0, min(scale, int(math.floor(min_x))))
+    x1 = max(0, min(scale, int(math.floor(max_x))))
+    y0 = max(0, min(scale, int(math.floor(min_y))))
+    y1 = max(0, min(scale, int(math.floor(max_y))))
+    return [(zoom, x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
+
+
+def load_osm_tile(z: int, x: int, y: int, cache_dir: Path = OSM_TILE_CACHE_DIR) -> Optional[np.ndarray]:
+    cache_path = cache_dir / str(z) / str(x) / f"{y}.png"
+    tile_key = (z, x, y)
+    retry_at = OSM_FAILED_TILES.get(tile_key)
+    if retry_at is not None and time.time() < retry_at and not cache_path.exists():
+        return None
     try:
-        import plotly.express as px
+        if not cache_path.exists():
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            request = urllib.request.Request(
+                f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                headers={"User-Agent": OSM_TILE_USER_AGENT},
+            )
+            with urllib.request.urlopen(request, timeout=OSM_TILE_TIMEOUT_SECONDS) as response:
+                cache_path.write_bytes(response.read())
+        from PIL import Image
 
-        fig = px.scatter_map(
-            rows,
-            lat="lat",
-            lon="lon",
-            color="alt_gps",
-            size_max=10,
-            zoom=14,
-            height=650,
-            color_continuous_scale="Viridis",
-            labels={"alt_gps": "Altitude (m)"},
-            title=f"GPS Track ({len(rows)} points)",
-            map_style="open-street-map",
-            hover_data=["millis", "source", "alt_baro", "sats", "rssi", "snr"],
-        )
-        fig.update_layout(margin={"r": 0, "t": 38, "l": 0, "b": 0})
-        html = fig.to_html(full_html=True, include_plotlyjs="cdn")
-    except Exception as exc:
-        html = _gps_map_error_html(str(exc), rows, refresh_seconds)
-    path.write_text(_with_meta_refresh(html, refresh_seconds), encoding="utf-8")
-    return len(rows)
+        with Image.open(cache_path) as image:
+            return np.asarray(image.convert("RGB"))
+    except Exception:
+        OSM_FAILED_TILES[tile_key] = time.time() + OSM_TILE_RETRY_SECONDS
+        return None
 
 
-def _with_meta_refresh(html: str, refresh_seconds: float) -> str:
-    meta = f'<meta http-equiv="refresh" content="{max(refresh_seconds, 1.0):.0f}">'
-    if "<head>" in html:
-        return html.replace("<head>", f"<head>{meta}", 1)
-    return f"<!doctype html><html><head>{meta}</head><body>{html}</body></html>"
+def osm_tile_layers(
+    lons: list[float],
+    lats: list[float],
+    cache_dir: Path = OSM_TILE_CACHE_DIR,
+) -> list[OsmTileLayer]:
+    return osm_layers_for_tiles(osm_tiles_for_points(lons, lats), cache_dir)
 
 
-def _empty_gps_map_html(refresh_seconds: float) -> str:
-    return _with_meta_refresh(
-        "<!doctype html><html><head><title>Duck2Dragon GPS Map</title></head>"
-        "<body style=\"font-family:sans-serif;margin:2rem;\">"
-        "<h1>Duck2Dragon GPS Map</h1>"
-        "<p>No valid GPS fix yet.</p>"
-        "</body></html>",
-        refresh_seconds,
-    )
-
-
-def _gps_map_error_html(error: str, rows: list[dict], refresh_seconds: float) -> str:
-    latest = rows[-1]
-    body = (
-        "<!doctype html><html><head><title>Duck2Dragon GPS Map</title></head>"
-        "<body style=\"font-family:sans-serif;margin:2rem;\">"
-        "<h1>Duck2Dragon GPS Map</h1>"
-        f"<p>Plotly map render failed: {escape(error)}</p>"
-        f"<p>Latest point: {latest['lat']:.6f}, {latest['lon']:.6f}</p>"
-        f"<p>Valid GPS points: {len(rows)}</p>"
-        "</body></html>"
-    )
-    return _with_meta_refresh(body, refresh_seconds)
+def osm_layers_for_tiles(
+    tiles: Iterable[OsmTileKey],
+    cache_dir: Path = OSM_TILE_CACHE_DIR,
+) -> list[OsmTileLayer]:
+    layers = []
+    for z, x, y in tiles:
+        image = load_osm_tile(z, x, y, cache_dir)
+        if image is not None:
+            layers.append((image, osm_tile_bounds(x, y, z)))
+    return layers
 
 
 class SerialReader:
@@ -746,9 +765,8 @@ class GroundStationMonitorApp(tk.Tk):
         self.dirty_merge_charts = False
         self.dirty_port_charts = {"port1": False, "port2": False}
         self.last_chart_refresh = 0.0
-        self.gps_map_open = False
-        self.gps_map_path = GPS_MAP_PATH
-        self.last_gps_map_refresh = 0.0
+        self.osm_layer_cache: dict[tuple[OsmTileKey, ...], list[OsmTileLayer]] = {}
+        self.osm_tile_requests: set[tuple[OsmTileKey, ...]] = set()
         self._build_ui()
         self.after(100, self._drain_events)
 
@@ -854,12 +872,11 @@ class GroundStationMonitorApp(tk.Tk):
         chart_area.rowconfigure(0, weight=2)
         chart_area.rowconfigure(1, weight=1)
 
-        gps_frame = ttk.LabelFrame(chart_area, text="Offline GPS Track")
+        gps_frame = ttk.LabelFrame(chart_area, text="GPS Track Map")
         gps_frame.grid(row=0, column=0, sticky="nsew")
         gps_controls = ttk.Frame(gps_frame)
         gps_controls.pack(fill="x", padx=4, pady=(4, 0))
-        self.gps_map_status_var = tk.StringVar(value="Live map: not opened")
-        ttk.Button(gps_controls, text="Open Live Map", command=self._open_gps_map).pack(side="left", padx=(0, 6))
+        self.gps_map_status_var = tk.StringVar(value="Map: waiting for GPS fix")
         ttk.Label(gps_controls, textvariable=self.gps_map_status_var).pack(side="left")
         self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_frame, "GPS Track", "relative north")
 
@@ -1088,6 +1105,13 @@ class GroundStationMonitorApp(tk.Tk):
             return
         if event_type == "line" and source in self.port_states:
             self._handle_line(source, event["line"], event.get("arrival_time", time.time()))
+            return
+        if event_type == "osm_tiles":
+            tile_key = event.get("tile_key")
+            if tile_key:
+                self.osm_layer_cache[tile_key] = event.get("layers", [])
+                self.osm_tile_requests.discard(tile_key)
+                self._mark_merge_charts_dirty()
 
     def _is_current_serial_event(self, source: str, event: dict) -> bool:
         generation = event.get("generation")
@@ -1276,22 +1300,27 @@ class GroundStationMonitorApp(tk.Tk):
         if gps_packets:
             lons = [packet.lon for packet in gps_packets]
             lats = [packet.lat for packet in gps_packets]
-            self.gps_ax.plot(lons, lats, color="#2563eb", linewidth=1.5, label="track")
-            self.gps_ax.scatter(lons[0], lats[0], color="#16a34a", s=40, label="start", zorder=3)
-            self.gps_ax.scatter(lons[-1], lats[-1], color="#dc2626", s=46, label="current", zorder=4)
+            tile_count, tiles_loading = self._draw_osm_tiles(lons, lats)
+            self.gps_ax.plot(lons, lats, color="#2563eb", linewidth=1.8, label="track", zorder=3)
+            self.gps_ax.scatter(lons[0], lats[0], color="#16a34a", edgecolor="white", s=46, label="start", zorder=4)
+            self.gps_ax.scatter(lons[-1], lats[-1], color="#dc2626", edgecolor="white", s=52, label="current", zorder=5)
             self.gps_ax.annotate(
                 f"{lats[-1]:.6f}, {lons[-1]:.6f}",
                 (lons[-1], lats[-1]),
                 xytext=(8, 8),
                 textcoords="offset points",
                 fontsize=8,
+                zorder=6,
             )
             self._fit_gps_axes(lons, lats)
             self.gps_ax.set_xlabel("longitude")
             self.gps_ax.set_ylabel("latitude")
             self.gps_ax.legend(loc="best")
+            loading_text = " loading" if tiles_loading else ""
+            self.gps_map_status_var.set(f"Map: {len(gps_packets)} GPS points, {tile_count} OSM tiles{loading_text}")
         else:
             self.gps_ax.text(0.5, 0.5, "No GPS lock", ha="center", va="center", transform=self.gps_ax.transAxes)
+            self.gps_map_status_var.set("Map: waiting for GPS fix")
         self.gps_canvas.draw_idle()
 
         self.alt_ax.clear()
@@ -1324,26 +1353,31 @@ class GroundStationMonitorApp(tk.Tk):
         if plotted:
             self.link_ax.legend(loc="lower left")
         self.link_canvas.draw_idle()
-        self._refresh_gps_map_if_open()
 
-    def _open_gps_map(self) -> None:
-        self.gps_map_open = True
-        self._write_gps_map()
-        webbrowser.open(self.gps_map_path.resolve().as_uri())
+    def _draw_osm_tiles(self, lons: list[float], lats: list[float]) -> tuple[int, bool]:
+        tile_key = tuple(osm_tiles_for_points(lons, lats))
+        if not tile_key:
+            return 0, False
+        layers = self.osm_layer_cache.get(tile_key)
+        if layers is None:
+            self._request_osm_tiles(tile_key)
+            layers = []
+        drawn = 0
+        for image, extent in layers:
+            self.gps_ax.imshow(image, extent=extent, origin="upper", aspect="auto", alpha=0.9, zorder=0)
+            drawn += 1
+        return drawn, tile_key in self.osm_tile_requests
 
-    def _refresh_gps_map_if_open(self) -> None:
-        if not self.gps_map_open:
+    def _request_osm_tiles(self, tile_key: tuple[OsmTileKey, ...]) -> None:
+        if tile_key in self.osm_tile_requests:
             return
-        now = time.time()
-        if now - self.last_gps_map_refresh < GPS_MAP_REFRESH_INTERVAL_SECONDS:
-            return
-        self._write_gps_map(now)
+        self.osm_tile_requests.add(tile_key)
 
-    def _write_gps_map(self, now: Optional[float] = None) -> int:
-        point_count = write_gps_map_html(self.merged_packets, self.gps_map_path)
-        self.last_gps_map_refresh = time.time() if now is None else now
-        self.gps_map_status_var.set(f"Live map: {point_count} GPS points")
-        return point_count
+        def load_tiles() -> None:
+            layers = osm_layers_for_tiles(tile_key)
+            self.event_queue.put({"type": "osm_tiles", "tile_key": tile_key, "layers": layers})
+
+        threading.Thread(target=load_tiles, daemon=True, name="osm-tile-loader").start()
 
     def _fit_gps_axes(self, lons: list[float], lats: list[float]) -> None:
         lon_min, lon_max = min(lons), max(lons)

@@ -266,29 +266,30 @@ class GpsMapTests(unittest.TestCase):
 
         self.assertEqual(packets, [valid])
 
-    def test_write_gps_map_html_creates_openstreetmap_plotly_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / "map.html"
+    def test_osm_tile_projection_and_bounds_are_consistent(self):
+        x, y = self.monitor.osm_tile_xy(0.0, 0.0, 1)
 
-            count = self.monitor.write_gps_map_html([self.packet()], path, refresh_seconds=2.0)
-            text = path.read_text(encoding="utf-8")
+        self.assertAlmostEqual(x, 1.0)
+        self.assertAlmostEqual(y, 1.0)
 
-        self.assertEqual(count, 1)
-        self.assertIn("GPS Track (1 points)", text)
-        self.assertIn("open-street-map", text)
-        self.assertIn('http-equiv="refresh"', text)
-        self.assertIn("Altitude (m)", text)
+        lon_left, lon_right, lat_bottom, lat_top = self.monitor.osm_tile_bounds(1, 1, 1)
 
-    def test_write_gps_map_html_handles_no_fix(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / "map.html"
+        self.assertLess(lon_left, 0.1)
+        self.assertGreater(lon_right, 179.0)
+        self.assertLess(lat_bottom, -80.0)
+        self.assertGreater(lat_top, -0.1)
 
-            count = self.monitor.write_gps_map_html([], path, refresh_seconds=2.0)
-            text = path.read_text(encoding="utf-8")
+    def test_osm_tile_layers_returns_cached_tile_images(self):
+        original_loader = self.monitor.load_osm_tile
+        self.addCleanup(setattr, self.monitor, "load_osm_tile", original_loader)
+        tile = self.monitor.np.zeros((2, 2, 3), dtype=self.monitor.np.uint8)
+        self.monitor.load_osm_tile = lambda z, x, y, cache_dir: tile
 
-        self.assertEqual(count, 0)
-        self.assertIn("No valid GPS fix yet.", text)
-        self.assertIn('http-equiv="refresh"', text)
+        layers = self.monitor.osm_tile_layers([100.043922], [8.367500])
+
+        self.assertEqual(len(layers), 1)
+        self.assertIs(layers[0][0], tile)
+        self.assertEqual(len(layers[0][1]), 4)
 
 
 class MergeBufferTests(unittest.TestCase):
@@ -803,6 +804,7 @@ class GroundStationMonitorAppTests(unittest.TestCase):
             app = self.monitor.GroundStationMonitorApp()
         except self.monitor.tk.TclError as exc:
             self.skipTest(f"Tk display unavailable: {exc}")
+        app._request_osm_tiles = lambda tile_key: app.osm_tile_requests.add(tile_key)
         if not charts:
             app._refresh_merge_charts = lambda: None
             app._refresh_port_charts = lambda source: None
@@ -1001,25 +1003,24 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertAlmostEqual(packet.watt, 3.436 * -116.700 / 1000.0)
         self.assertIn("RSSI: -101", app.port1_detail_var.get())
 
-    def test_open_gps_map_writes_html_and_opens_browser(self):
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        app = self.make_app()
-        app.gps_map_path = pathlib.Path(temp_dir.name) / "live_map.html"
-        opened_urls = []
-        original_open = self.monitor.webbrowser.open
-        self.addCleanup(setattr, self.monitor.webbrowser, "open", original_open)
-        self.monitor.webbrowser.open = opened_urls.append
+    def test_gps_map_renders_osm_tile_inside_gps_chart(self):
+        app = self.make_app(charts=True)
+        tile = self.monitor.np.zeros((2, 2, 3), dtype=self.monitor.np.uint8)
+        extent = (100.043, 100.045, 8.367, 8.368)
 
         app.port_states["port1"].record_link(-50, 9.0)
         app._handle_line("port1", self.packet_line(millis=14), arrival_time=1000.0)
-        app._open_gps_map()
+        app._refresh_dirty_charts(force=True)
 
-        self.assertTrue(app.gps_map_open)
-        self.assertEqual(len(opened_urls), 1)
-        self.assertTrue(opened_urls[0].startswith("file:"))
-        self.assertTrue(app.gps_map_path.exists())
-        self.assertIn("Live map: 1 GPS points", app.gps_map_status_var.get())
+        self.assertEqual(len(app.gps_ax.images), 0)
+        self.assertIn("Map: 1 GPS points, 0 OSM tiles loading", app.gps_map_status_var.get())
+
+        tile_key = next(iter(app.osm_tile_requests))
+        app._handle_event({"type": "osm_tiles", "tile_key": tile_key, "layers": [(tile, extent)]})
+        app._refresh_dirty_charts(force=True)
+
+        self.assertEqual(len(app.gps_ax.images), 1)
+        self.assertIn("Map: 1 GPS points, 1 OSM tiles", app.gps_map_status_var.get())
 
     def test_port_detail_includes_raw_snr_and_log_path(self):
         temp_dir = tempfile.TemporaryDirectory()
