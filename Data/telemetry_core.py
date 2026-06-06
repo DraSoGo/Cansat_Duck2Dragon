@@ -302,3 +302,39 @@ def evaluate_port_alerts(state: PortState, now: Optional[float] = None, config: 
     if state.recent_malformed >= config.malformed_burst_threshold:
         alerts.add("malformed_burst")
     return alerts
+
+
+class MergeBuffer:
+    def __init__(self, max_packets: int = 2000):
+        self.max_packets = max_packets
+        self.selected: dict[int, TelemetryPacket] = {}
+        self.history: list[int] = []
+
+    def add(self, packet: TelemetryPacket) -> TelemetryPacket:
+        current = self.selected.get(packet.millis)
+        if current is None:
+            self.selected[packet.millis] = packet
+            self.history.append(packet.millis)
+            self._trim()
+            return packet
+
+        if self._is_better(packet, current):
+            self.selected[packet.millis] = packet
+            return packet
+
+        return current
+
+    @staticmethod
+    def _is_better(candidate: TelemetryPacket, current: TelemetryPacket) -> bool:
+        if candidate.rssi is not None and current.rssi is not None:
+            return candidate.rssi > current.rssi
+        if candidate.rssi is not None and current.rssi is None:
+            return True
+        if candidate.rssi is None and current.rssi is not None:
+            return False
+        return candidate.arrival_time < current.arrival_time
+
+    def _trim(self) -> None:
+        while len(self.history) > self.max_packets:
+            oldest = self.history.pop(0)
+            self.selected.pop(oldest, None)
