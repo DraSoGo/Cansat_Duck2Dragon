@@ -1,5 +1,6 @@
 import csv
 import importlib.util
+import math
 import pathlib
 import queue
 import tempfile
@@ -87,17 +88,93 @@ class ParserTests(unittest.TestCase):
 
         self.assertAlmostEqual(packet.watt, 3.968 * -116.500 / 1000.0)
 
-    def test_rejects_wrong_field_count(self):
+    def test_short_packet_pads_missing_fields_with_nan(self):
+        packet = self.monitor.TelemetryParser.parse_packet(
+            "1,2,3",
+            source="port1",
+            rssi=None,
+            snr=None,
+            arrival_time=1000.0,
+        )
+
+        self.assertEqual(packet.millis, 1)
+        self.assertAlmostEqual(packet.lat, 2.0)
+        self.assertAlmostEqual(packet.lon, 3.0)
+        self.assertTrue(math.isnan(packet.alt_gps))
+        self.assertTrue(math.isnan(packet.voltage))
+        self.assertTrue(math.isnan(packet.current))
+        self.assertTrue(math.isnan(packet.watt))
+
+    def test_bad_numeric_fields_become_nan(self):
+        line = (
+            "128518,bad-lat,100.043922,-1.80,not-sats,56.02,24.98,1006.54,"
+            "bad-ax,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,bad-voltage,-90.500,bad-watt"
+        )
+
+        packet = self.monitor.TelemetryParser.parse_packet(
+            line,
+            source="port1",
+            rssi=None,
+            snr=None,
+            arrival_time=1000.0,
+        )
+
+        self.assertEqual(packet.millis, 128518)
+        self.assertTrue(math.isnan(packet.lat))
+        self.assertTrue(math.isnan(packet.sats))
+        self.assertTrue(math.isnan(packet.ax))
+        self.assertTrue(math.isnan(packet.voltage))
+        self.assertAlmostEqual(packet.current, -90.500)
+        self.assertTrue(math.isnan(packet.watt))
+        self.assertFalse(packet.gps_valid)
+
+    def test_inline_comment_packet_strips_link_metadata_before_csv_parse(self):
+        line = (
+            "324091,8.375336,100.080513,-557.60,5,40.96,32.81,1008.34,"
+            "0.0000,0.0000,0.0000,-0.0117,0.0059,0.0000,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.436,-116.700"
+            "# RSSI=-101 SNR=12.75"
+        )
+
+        packet = self.monitor.TelemetryParser.parse_packet(
+            line,
+            source="port1",
+            rssi=-101,
+            snr=12.75,
+            arrival_time=1000.0,
+        )
+
+        self.assertEqual(packet.millis, 324091)
+        self.assertAlmostEqual(packet.current, -116.700)
+        self.assertAlmostEqual(packet.watt, 3.436 * -116.700 / 1000.0)
+        self.assertEqual(packet.rssi, -101)
+        self.assertAlmostEqual(packet.snr, 12.75)
+
+    def test_corrupt_millis_uses_leading_digits_when_available(self):
+        packet = self.monitor.TelemetryParser.parse_packet(
+            "104671V,8.369947",
+            source="port1",
+            rssi=None,
+            snr=None,
+            arrival_time=1000.0,
+        )
+
+        self.assertEqual(packet.millis, 104671)
+        self.assertAlmostEqual(packet.lat, 8.369947)
+        self.assertTrue(math.isnan(packet.lon))
+
+    def test_rejects_packet_without_usable_millis(self):
         with self.assertRaises(ValueError) as ctx:
             self.monitor.TelemetryParser.parse_packet(
-                "1,2,3",
+                "bad,line",
                 source="port1",
                 rssi=None,
                 snr=None,
                 arrival_time=1000.0,
             )
 
-        self.assertIn("expected 24 fields", str(ctx.exception))
+        self.assertIn("invalid millis field", str(ctx.exception))
 
     def test_parse_rssi_snr_comment(self):
         result = self.monitor.TelemetryParser.parse_link_comment("# RSSI=-67 SNR=10.25")
@@ -805,6 +882,29 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertIn("Voltage: 3.684 V", readout)
         self.assertIn("Current: -90.500 mA", readout)
         self.assertIn("Watt: -0.333 W", readout)
+
+    def test_inline_vibration_replay_row_updates_packet_and_link_state(self):
+        app = self.make_app()
+        line = (
+            "324091,8.375336,100.080513,-557.60,5,40.96,32.81,1008.34,"
+            "0.0000,0.0000,0.0000,-0.0117,0.0059,0.0000,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.436,-116.700"
+            "# RSSI=-101 SNR=12.75"
+        )
+
+        app._handle_line("port1", line, arrival_time=1000.0)
+
+        state = app.port_states["port1"]
+        packet = state.latest_packet
+        self.assertEqual(state.packet_count, 1)
+        self.assertEqual(state.malformed_count, 0)
+        self.assertEqual(app.merged_count, 1)
+        self.assertIsNotNone(packet)
+        self.assertEqual(packet.rssi, -101)
+        self.assertAlmostEqual(packet.snr, 12.75)
+        self.assertAlmostEqual(packet.current, -116.700)
+        self.assertAlmostEqual(packet.watt, 3.436 * -116.700 / 1000.0)
+        self.assertIn("RSSI: -101", app.port1_detail_var.get())
 
     def test_port_detail_includes_raw_snr_and_log_path(self):
         temp_dir = tempfile.TemporaryDirectory()

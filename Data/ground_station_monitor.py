@@ -68,7 +68,12 @@ class TelemetryPacket:
 
     @property
     def gps_valid(self) -> bool:
-        return self.sats > 0 and not (self.lat == 0.0 and self.lon == 0.0)
+        return (
+            self.sats > 0
+            and math.isfinite(self.lat)
+            and math.isfinite(self.lon)
+            and not (self.lat == 0.0 and self.lon == 0.0)
+        )
 
     @property
     def accel_mag(self) -> float:
@@ -177,6 +182,7 @@ def evaluate_port_alerts(state: PortState, now: Optional[float] = None) -> set[s
 
 class TelemetryParser:
     LINK_RE = re.compile(r"RSSI=(-?\d+)\s+SNR=(-?\d+(?:\.\d+)?)")
+    LEADING_INT_RE = re.compile(r"\s*(\d+)")
 
     @staticmethod
     def parse_link_comment(line: str) -> tuple[Optional[int], Optional[float]]:
@@ -193,44 +199,37 @@ class TelemetryParser:
         snr: Optional[float],
         arrival_time: Optional[float] = None,
     ) -> TelemetryPacket:
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) == CSV_FIELD_COUNT - 1:
-            parts.append("")
-        if len(parts) != CSV_FIELD_COUNT:
-            raise ValueError(f"expected 24 fields, got {len(parts)}")
-
-        try:
-            voltage = float(parts[21])
-            current = float(parts[22])
-            watt = float(parts[23]) if parts[23] else voltage * current / 1000.0
-            values = {
-                "millis": int(parts[0]),
-                "lat": float(parts[1]),
-                "lon": float(parts[2]),
-                "alt_gps": float(parts[3]),
-                "sats": int(float(parts[4])),
-                "alt_baro": float(parts[5]),
-                "temp": float(parts[6]),
-                "pressure": float(parts[7]),
-                "ax": float(parts[8]),
-                "ay": float(parts[9]),
-                "az": float(parts[10]),
-                "gx": float(parts[11]),
-                "gy": float(parts[12]),
-                "gz": float(parts[13]),
-                "qw": float(parts[14]),
-                "qx": float(parts[15]),
-                "qy": float(parts[16]),
-                "qz": float(parts[17]),
-                "high_ax": float(parts[18]),
-                "high_ay": float(parts[19]),
-                "high_az": float(parts[20]),
-                "voltage": voltage,
-                "current": current,
-                "watt": watt,
-            }
-        except ValueError as exc:
-            raise ValueError(f"invalid numeric field: {exc}") from exc
+        parts = TelemetryParser._normalise_fields(line)
+        millis = TelemetryParser._parse_millis(parts[0])
+        voltage = TelemetryParser._float_or_nan(parts[21])
+        current = TelemetryParser._float_or_nan(parts[22])
+        watt = TelemetryParser._parse_watt(parts[23], voltage, current)
+        values = {
+            "millis": millis,
+            "lat": TelemetryParser._float_or_nan(parts[1]),
+            "lon": TelemetryParser._float_or_nan(parts[2]),
+            "alt_gps": TelemetryParser._float_or_nan(parts[3]),
+            "sats": TelemetryParser._int_or_nan(parts[4]),
+            "alt_baro": TelemetryParser._float_or_nan(parts[5]),
+            "temp": TelemetryParser._float_or_nan(parts[6]),
+            "pressure": TelemetryParser._float_or_nan(parts[7]),
+            "ax": TelemetryParser._float_or_nan(parts[8]),
+            "ay": TelemetryParser._float_or_nan(parts[9]),
+            "az": TelemetryParser._float_or_nan(parts[10]),
+            "gx": TelemetryParser._float_or_nan(parts[11]),
+            "gy": TelemetryParser._float_or_nan(parts[12]),
+            "gz": TelemetryParser._float_or_nan(parts[13]),
+            "qw": TelemetryParser._float_or_nan(parts[14]),
+            "qx": TelemetryParser._float_or_nan(parts[15]),
+            "qy": TelemetryParser._float_or_nan(parts[16]),
+            "qz": TelemetryParser._float_or_nan(parts[17]),
+            "high_ax": TelemetryParser._float_or_nan(parts[18]),
+            "high_ay": TelemetryParser._float_or_nan(parts[19]),
+            "high_az": TelemetryParser._float_or_nan(parts[20]),
+            "voltage": voltage,
+            "current": current,
+            "watt": watt,
+        }
 
         return TelemetryPacket(
             raw_line=line,
@@ -240,6 +239,52 @@ class TelemetryParser:
             snr=snr,
             **values,
         )
+
+    @staticmethod
+    def _normalise_fields(line: str) -> list[str]:
+        data_part = line.split("#", 1)[0].strip()
+        if not data_part:
+            raise ValueError("empty telemetry row")
+        parts = [part.strip() for part in data_part.split(",")]
+        if len(parts) < CSV_FIELD_COUNT:
+            parts.extend([""] * (CSV_FIELD_COUNT - len(parts)))
+        return parts[:CSV_FIELD_COUNT]
+
+    @staticmethod
+    def _parse_millis(value: str) -> int:
+        try:
+            return int(float(value))
+        except ValueError as exc:
+            match = TelemetryParser.LEADING_INT_RE.match(value)
+            if match:
+                return int(match.group(1))
+            raise ValueError(f"invalid millis field: {value!r}") from exc
+
+    @staticmethod
+    def _float_or_nan(value: str) -> float:
+        if value == "":
+            return math.nan
+        try:
+            return float(value)
+        except ValueError:
+            return math.nan
+
+    @staticmethod
+    def _int_or_nan(value: str):
+        if value == "":
+            return math.nan
+        try:
+            return int(float(value))
+        except ValueError:
+            return math.nan
+
+    @staticmethod
+    def _parse_watt(value: str, voltage: float, current: float) -> float:
+        if value:
+            return TelemetryParser._float_or_nan(value)
+        if math.isfinite(voltage) and math.isfinite(current):
+            return voltage * current / 1000.0
+        return math.nan
 
 
 class MergeBuffer:
@@ -943,9 +988,10 @@ class GroundStationMonitorApp(tk.Tk):
         state.record_raw(line, arrival_time)
         if self.log_writer is not None:
             self.log_writer.write_raw(source, line)
-        if line.startswith("#"):
+        if "#" in line:
             rssi, snr = TelemetryParser.parse_link_comment(line)
             state.record_link(rssi, snr)
+        if line.startswith("#"):
             self._update_port_view(source, refresh_charts=False)
             return
         try:
