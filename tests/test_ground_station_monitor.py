@@ -766,6 +766,9 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app._handle_line("port2", self.packet_line(millis=11), arrival_time=1001.0)
 
         self.assertGreaterEqual(len(app.gps_ax.lines), 1)
+        self.assertEqual(app.gps_ax.get_xlabel(), "longitude")
+        self.assertEqual(app.gps_ax.get_ylabel(), "latitude")
+        self.assertGreaterEqual(len(app.gps_ax.collections), 2)
         self.assertGreaterEqual(len(app.alt_ax.lines), 2)
         self.assertEqual(len(app.link_ax.lines), 4)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["altitude"][1].lines), 1)

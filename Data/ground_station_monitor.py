@@ -1106,13 +1106,22 @@ class GroundStationMonitorApp(tk.Tk):
         self.gps_ax.set_title("GPS Track")
         self.gps_ax.grid(True, alpha=0.3)
         if gps_packets:
-            origin_lat = gps_packets[0].lat
-            origin_lon = gps_packets[0].lon
-            xs = [(packet.lon - origin_lon) * 111_320 for packet in gps_packets]
-            ys = [(packet.lat - origin_lat) * 110_540 for packet in gps_packets]
-            self.gps_ax.plot(xs, ys, marker="o", linewidth=1)
-            self.gps_ax.set_xlabel("relative east (m)")
-            self.gps_ax.set_ylabel("relative north (m)")
+            lons = [packet.lon for packet in gps_packets]
+            lats = [packet.lat for packet in gps_packets]
+            self.gps_ax.plot(lons, lats, color="#2563eb", linewidth=1.5, label="track")
+            self.gps_ax.scatter(lons[0], lats[0], color="#16a34a", s=40, label="start", zorder=3)
+            self.gps_ax.scatter(lons[-1], lats[-1], color="#dc2626", s=46, label="current", zorder=4)
+            self.gps_ax.annotate(
+                f"{lats[-1]:.6f}, {lons[-1]:.6f}",
+                (lons[-1], lats[-1]),
+                xytext=(8, 8),
+                textcoords="offset points",
+                fontsize=8,
+            )
+            self._fit_gps_axes(lons, lats)
+            self.gps_ax.set_xlabel("longitude")
+            self.gps_ax.set_ylabel("latitude")
+            self.gps_ax.legend(loc="best")
         else:
             self.gps_ax.text(0.5, 0.5, "No GPS lock", ha="center", va="center", transform=self.gps_ax.transAxes)
         self.gps_canvas.draw_idle()
@@ -1147,6 +1156,14 @@ class GroundStationMonitorApp(tk.Tk):
         if plotted:
             self.link_ax.legend(loc="lower left")
         self.link_canvas.draw_idle()
+
+    def _fit_gps_axes(self, lons: list[float], lats: list[float]) -> None:
+        lon_min, lon_max = min(lons), max(lons)
+        lat_min, lat_max = min(lats), max(lats)
+        lon_pad = max((lon_max - lon_min) * 0.1, 0.0001)
+        lat_pad = max((lat_max - lat_min) * 0.1, 0.0001)
+        self.gps_ax.set_xlim(lon_min - lon_pad, lon_max + lon_pad)
+        self.gps_ax.set_ylim(lat_min - lat_pad, lat_max + lat_pad)
 
     def _refresh_port_charts(self, source: str) -> None:
         packets = self.port_packets[source][-100:]
