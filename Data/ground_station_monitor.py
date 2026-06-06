@@ -8,8 +8,10 @@ import re
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable, Iterable, Optional
@@ -31,8 +33,10 @@ DEFAULT_PORT_2 = "/dev/ttyUSB0"
 DATA_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = DATA_DIR.parent / "assets" / "D2D_logo.png"
 LOG_DIR = DATA_DIR / "logs"
+GPS_MAP_PATH = LOG_DIR / "live_gps_map.html"
 EVENT_DRAIN_BATCH_SIZE = 200
 CHART_REFRESH_INTERVAL_SECONDS = 0.25
+GPS_MAP_REFRESH_INTERVAL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -505,6 +509,92 @@ def configure_window_icon(root: tk.Tk, icon_path: Path = APP_ICON_PATH) -> bool:
     return True
 
 
+def valid_gps_packets(packets: Iterable[TelemetryPacket]) -> list[TelemetryPacket]:
+    return [packet for packet in packets if packet.gps_valid]
+
+
+def write_gps_map_html(
+    packets: Iterable[TelemetryPacket],
+    path: Path = GPS_MAP_PATH,
+    refresh_seconds: float = GPS_MAP_REFRESH_INTERVAL_SECONDS,
+) -> int:
+    gps_packets = valid_gps_packets(packets)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not gps_packets:
+        path.write_text(_empty_gps_map_html(refresh_seconds), encoding="utf-8")
+        return 0
+
+    rows = [
+        {
+            "millis": packet.millis,
+            "source": packet.source,
+            "lat": packet.lat,
+            "lon": packet.lon,
+            "alt_gps": packet.alt_gps,
+            "alt_baro": packet.alt_baro,
+            "sats": packet.sats,
+            "rssi": packet.rssi,
+            "snr": packet.snr,
+        }
+        for packet in gps_packets
+    ]
+    try:
+        import plotly.express as px
+
+        fig = px.scatter_map(
+            rows,
+            lat="lat",
+            lon="lon",
+            color="alt_gps",
+            size_max=10,
+            zoom=14,
+            height=650,
+            color_continuous_scale="Viridis",
+            labels={"alt_gps": "Altitude (m)"},
+            title=f"GPS Track ({len(rows)} points)",
+            map_style="open-street-map",
+            hover_data=["millis", "source", "alt_baro", "sats", "rssi", "snr"],
+        )
+        fig.update_layout(margin={"r": 0, "t": 38, "l": 0, "b": 0})
+        html = fig.to_html(full_html=True, include_plotlyjs="cdn")
+    except Exception as exc:
+        html = _gps_map_error_html(str(exc), rows, refresh_seconds)
+    path.write_text(_with_meta_refresh(html, refresh_seconds), encoding="utf-8")
+    return len(rows)
+
+
+def _with_meta_refresh(html: str, refresh_seconds: float) -> str:
+    meta = f'<meta http-equiv="refresh" content="{max(refresh_seconds, 1.0):.0f}">'
+    if "<head>" in html:
+        return html.replace("<head>", f"<head>{meta}", 1)
+    return f"<!doctype html><html><head>{meta}</head><body>{html}</body></html>"
+
+
+def _empty_gps_map_html(refresh_seconds: float) -> str:
+    return _with_meta_refresh(
+        "<!doctype html><html><head><title>Duck2Dragon GPS Map</title></head>"
+        "<body style=\"font-family:sans-serif;margin:2rem;\">"
+        "<h1>Duck2Dragon GPS Map</h1>"
+        "<p>No valid GPS fix yet.</p>"
+        "</body></html>",
+        refresh_seconds,
+    )
+
+
+def _gps_map_error_html(error: str, rows: list[dict], refresh_seconds: float) -> str:
+    latest = rows[-1]
+    body = (
+        "<!doctype html><html><head><title>Duck2Dragon GPS Map</title></head>"
+        "<body style=\"font-family:sans-serif;margin:2rem;\">"
+        "<h1>Duck2Dragon GPS Map</h1>"
+        f"<p>Plotly map render failed: {escape(error)}</p>"
+        f"<p>Latest point: {latest['lat']:.6f}, {latest['lon']:.6f}</p>"
+        f"<p>Valid GPS points: {len(rows)}</p>"
+        "</body></html>"
+    )
+    return _with_meta_refresh(body, refresh_seconds)
+
+
 class SerialReader:
     def __init__(
         self,
@@ -656,6 +746,9 @@ class GroundStationMonitorApp(tk.Tk):
         self.dirty_merge_charts = False
         self.dirty_port_charts = {"port1": False, "port2": False}
         self.last_chart_refresh = 0.0
+        self.gps_map_open = False
+        self.gps_map_path = GPS_MAP_PATH
+        self.last_gps_map_refresh = 0.0
         self._build_ui()
         self.after(100, self._drain_events)
 
@@ -763,6 +856,11 @@ class GroundStationMonitorApp(tk.Tk):
 
         gps_frame = ttk.LabelFrame(chart_area, text="Offline GPS Track")
         gps_frame.grid(row=0, column=0, sticky="nsew")
+        gps_controls = ttk.Frame(gps_frame)
+        gps_controls.pack(fill="x", padx=4, pady=(4, 0))
+        self.gps_map_status_var = tk.StringVar(value="Live map: not opened")
+        ttk.Button(gps_controls, text="Open Live Map", command=self._open_gps_map).pack(side="left", padx=(0, 6))
+        ttk.Label(gps_controls, textvariable=self.gps_map_status_var).pack(side="left")
         self.gps_fig, self.gps_ax, self.gps_canvas = self._make_figure(gps_frame, "GPS Track", "relative north")
 
         lower_charts = ttk.Frame(chart_area)
@@ -1226,6 +1324,26 @@ class GroundStationMonitorApp(tk.Tk):
         if plotted:
             self.link_ax.legend(loc="lower left")
         self.link_canvas.draw_idle()
+        self._refresh_gps_map_if_open()
+
+    def _open_gps_map(self) -> None:
+        self.gps_map_open = True
+        self._write_gps_map()
+        webbrowser.open(self.gps_map_path.resolve().as_uri())
+
+    def _refresh_gps_map_if_open(self) -> None:
+        if not self.gps_map_open:
+            return
+        now = time.time()
+        if now - self.last_gps_map_refresh < GPS_MAP_REFRESH_INTERVAL_SECONDS:
+            return
+        self._write_gps_map(now)
+
+    def _write_gps_map(self, now: Optional[float] = None) -> int:
+        point_count = write_gps_map_html(self.merged_packets, self.gps_map_path)
+        self.last_gps_map_refresh = time.time() if now is None else now
+        self.gps_map_status_var.set(f"Live map: {point_count} GPS points")
+        return point_count
 
     def _fit_gps_axes(self, lons: list[float], lats: list[float]) -> None:
         lon_min, lon_max = min(lons), max(lons)

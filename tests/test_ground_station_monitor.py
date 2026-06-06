@@ -239,6 +239,58 @@ class WindowIconTests(unittest.TestCase):
         self.assertEqual(root._app_icon_image.file, str(icon_path))
 
 
+class GpsMapTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def packet(self, millis=1, lat=8.367500, lon=100.043922, sats=12, alt_gps=-1.8):
+        line = (
+            f"{millis},{lat:.6f},{lon:.6f},{alt_gps:.2f},{sats},56.02,24.98,1006.54,"
+            "0.1000,0.2000,0.3000,-0.1445,0.2070,0.2324,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.684,-90.500,-0.333"
+        )
+        return self.monitor.TelemetryParser.parse_packet(line, "port1", -61, 11.75, 1000.0)
+
+    def test_valid_gps_packets_filters_zero_and_nan_positions(self):
+        valid = self.packet()
+        zero = self.packet(millis=2, lat=0.0, lon=0.0)
+        missing = self.monitor.TelemetryParser.parse_packet(
+            "3,,,0,8",
+            source="port1",
+            rssi=None,
+            snr=None,
+            arrival_time=1000.0,
+        )
+
+        packets = self.monitor.valid_gps_packets([valid, zero, missing])
+
+        self.assertEqual(packets, [valid])
+
+    def test_write_gps_map_html_creates_openstreetmap_plotly_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "map.html"
+
+            count = self.monitor.write_gps_map_html([self.packet()], path, refresh_seconds=2.0)
+            text = path.read_text(encoding="utf-8")
+
+        self.assertEqual(count, 1)
+        self.assertIn("GPS Track (1 points)", text)
+        self.assertIn("open-street-map", text)
+        self.assertIn('http-equiv="refresh"', text)
+        self.assertIn("Altitude (m)", text)
+
+    def test_write_gps_map_html_handles_no_fix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "map.html"
+
+            count = self.monitor.write_gps_map_html([], path, refresh_seconds=2.0)
+            text = path.read_text(encoding="utf-8")
+
+        self.assertEqual(count, 0)
+        self.assertIn("No valid GPS fix yet.", text)
+        self.assertIn('http-equiv="refresh"', text)
+
+
 class MergeBufferTests(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
@@ -948,6 +1000,26 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertAlmostEqual(packet.current, -116.700)
         self.assertAlmostEqual(packet.watt, 3.436 * -116.700 / 1000.0)
         self.assertIn("RSSI: -101", app.port1_detail_var.get())
+
+    def test_open_gps_map_writes_html_and_opens_browser(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        app = self.make_app()
+        app.gps_map_path = pathlib.Path(temp_dir.name) / "live_map.html"
+        opened_urls = []
+        original_open = self.monitor.webbrowser.open
+        self.addCleanup(setattr, self.monitor.webbrowser, "open", original_open)
+        self.monitor.webbrowser.open = opened_urls.append
+
+        app.port_states["port1"].record_link(-50, 9.0)
+        app._handle_line("port1", self.packet_line(millis=14), arrival_time=1000.0)
+        app._open_gps_map()
+
+        self.assertTrue(app.gps_map_open)
+        self.assertEqual(len(opened_urls), 1)
+        self.assertTrue(opened_urls[0].startswith("file:"))
+        self.assertTrue(app.gps_map_path.exists())
+        self.assertIn("Live map: 1 GPS points", app.gps_map_status_var.get())
 
     def test_port_detail_includes_raw_snr_and_log_path(self):
         temp_dir = tempfile.TemporaryDirectory()
