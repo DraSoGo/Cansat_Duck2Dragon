@@ -1002,10 +1002,10 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app._handle_line("port2", self.packet_line(millis=11), arrival_time=1001.0)
         app._refresh_dirty_charts(force=True)
 
-        self.assertGreaterEqual(len(app.gps_ax.lines), 1)
+        self.assertEqual(len(app.gps_ax.lines), 0)
         self.assertEqual(app.gps_ax.get_xlabel(), "longitude")
         self.assertEqual(app.gps_ax.get_ylabel(), "latitude")
-        self.assertGreaterEqual(len(app.gps_ax.collections), 2)
+        self.assertGreaterEqual(len(app.gps_ax.collections), 3)
         self.assertGreaterEqual(len(app.alt_ax.lines), 2)
         self.assertEqual(len(app.link_ax.lines), 4)
         self.assertGreaterEqual(len(getattr(app, "port1_figures")["altitude"][1].lines), 1)
@@ -1110,22 +1110,16 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(len(app.gps_ax.images), 1)
         self.assertIn("Map: 1 GPS points, 1 OSM tiles", app.gps_map_status_var.get())
 
-    def test_interactive_gps_map_centers_once_and_extends_path(self):
+    def test_interactive_gps_map_centers_once_and_updates_point_markers(self):
         class FakeMarker:
-            def __init__(self, lat, lon, text):
+            def __init__(self, lat, lon, text, **kwargs):
                 self.positions = [(lat, lon)]
                 self.text = text
+                self.kwargs = kwargs
+                self.deleted = False
 
             def set_position(self, lat, lon):
                 self.positions.append((lat, lon))
-
-        class FakePath:
-            def __init__(self, positions):
-                self.position_lists = [list(positions)]
-                self.deleted = False
-
-            def set_position_list(self, positions):
-                self.position_lists.append(list(positions))
 
             def delete(self):
                 self.deleted = True
@@ -1149,15 +1143,14 @@ class GroundStationMonitorAppTests(unittest.TestCase):
             def set_position(self, lat, lon):
                 self.positions.append((lat, lon))
 
-            def set_marker(self, lat, lon, text=None):
-                marker = FakeMarker(lat, lon, text)
+            def set_marker(self, lat, lon, text=None, **kwargs):
+                marker = FakeMarker(lat, lon, text, **kwargs)
                 self.markers.append(marker)
                 return marker
 
             def set_path(self, positions):
-                path = FakePath(positions)
-                self.paths.append(path)
-                return path
+                self.paths.append(list(positions))
+                raise AssertionError("GPS map should render points without connecting path lines")
 
         class FakeTkinterMapViewModule:
             TkinterMapView = FakeMapWidget
@@ -1180,6 +1173,10 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(widget.markers[0].text, "Start")
         self.assertEqual(widget.markers[1].text, "Current")
         self.assertEqual(widget.markers[1].positions[-1], (8.367500, 100.043922))
+        self.assertEqual(len(app.gps_point_markers), 1)
+        self.assertIs(widget.markers[2], app.gps_point_markers[0])
+        self.assertEqual(widget.markers[2].text, None)
+        self.assertEqual(widget.markers[2].kwargs["icon_anchor"], "center")
         self.assertEqual(widget.paths, [])
         self.assertIn("Map: 1 GPS points", app.gps_map_status_var.get())
 
@@ -1190,30 +1187,25 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(widget.markers[0].text, "Start")
         self.assertEqual(widget.markers[1].text, "Current")
         self.assertEqual(widget.markers[1].positions[-1], (8.367900, 100.044500))
-        self.assertEqual(
-            widget.paths[0].position_lists[-1],
-            [(8.367500, 100.043922), (8.367900, 100.044500)],
-        )
+        self.assertEqual(widget.paths, [])
+        self.assertEqual(len(app.gps_point_markers), 2)
+        self.assertEqual(widget.markers[2].positions[-1], (8.367500, 100.043922))
+        self.assertEqual(widget.markers[3].positions[-1], (8.367900, 100.044500))
         self.assertIn("Map: 2 GPS points", app.gps_map_status_var.get())
 
     def test_interactive_gps_map_keeps_full_track_beyond_chart_window(self):
         class FakeMarker:
-            def __init__(self, lat, lon, text):
+            def __init__(self, lat, lon, text, **kwargs):
                 self.positions = [(lat, lon)]
                 self.text = text
+                self.kwargs = kwargs
+                self.deleted = False
 
             def set_position(self, lat, lon):
                 self.positions.append((lat, lon))
 
-        class FakePath:
-            def __init__(self, positions):
-                self.position_lists = [list(positions)]
-
-            def set_position_list(self, positions):
-                self.position_lists.append(list(positions))
-
             def delete(self):
-                pass
+                self.deleted = True
 
         class FakeMapWidget:
             instances = []
@@ -1234,15 +1226,14 @@ class GroundStationMonitorAppTests(unittest.TestCase):
             def set_position(self, lat, lon):
                 self.positions.append((lat, lon))
 
-            def set_marker(self, lat, lon, text=None):
-                marker = FakeMarker(lat, lon, text)
+            def set_marker(self, lat, lon, text=None, **kwargs):
+                marker = FakeMarker(lat, lon, text, **kwargs)
                 self.markers.append(marker)
                 return marker
 
             def set_path(self, positions):
-                path = FakePath(positions)
-                self.paths.append(path)
-                return path
+                self.paths.append(list(positions))
+                raise AssertionError("GPS map should render points without connecting path lines")
 
         class FakeTkinterMapViewModule:
             TkinterMapView = FakeMapWidget
@@ -1268,8 +1259,9 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         widget = FakeMapWidget.instances[-1]
         self.assertEqual(widget.markers[0].positions[0], (8.36, 100.04))
         self.assertEqual(widget.positions, [(8.36, 100.04)])
-        self.assertEqual(len(widget.paths[0].position_lists[-1]), 125)
-        self.assertEqual(widget.paths[0].position_lists[-1][0], (8.36, 100.04))
+        self.assertEqual(widget.paths, [])
+        self.assertEqual(len(app.gps_point_markers), 125)
+        self.assertEqual(app.gps_point_markers[0].positions[-1], (8.36, 100.04))
         self.assertEqual(widget.markers[1].positions[-1], (8.36124, 100.04))
         self.assertIn("Map: 125 GPS points", app.gps_map_status_var.get())
 

@@ -869,6 +869,8 @@ class GroundStationMonitorApp(tk.Tk):
         self.gps_start_marker: Any = None
         self.gps_current_marker: Any = None
         self.gps_track_path: Any = None
+        self.gps_point_markers: list[Any] = []
+        self.gps_point_icon = self._make_gps_point_icon()
         self.gps_map_centered = False
         self._build_ui()
         self._apply_theme(redraw=False)
@@ -1070,6 +1072,13 @@ class GroundStationMonitorApp(tk.Tk):
             tree.heading(column, text=column)
             tree.column(column, width=90, anchor="center")
         return tree
+
+    def _make_gps_point_icon(self) -> tk.PhotoImage:
+        icon = tk.PhotoImage(width=7, height=7)
+        rows = ((3, 3), (2, 4), (1, 5), (0, 6), (1, 5), (2, 4), (3, 3))
+        for y, (x1, x2) in enumerate(rows):
+            icon.put("#2563eb", to=(x1, y, x2 + 1, y + 1))
+        return icon
 
     def _toggle_theme(self) -> None:
         self.theme_name = "dark" if self.theme_name == "light" else "light"
@@ -1568,7 +1577,7 @@ class GroundStationMonitorApp(tk.Tk):
             lons = [packet.lon for packet in gps_packets]
             lats = [packet.lat for packet in gps_packets]
             tile_count, tiles_loading = self._draw_osm_tiles(lons, lats)
-            self.gps_ax.plot(lons, lats, color="#2563eb", linewidth=1.8, label="track", zorder=3)
+            self.gps_ax.scatter(lons, lats, color="#2563eb", s=14, alpha=0.8, label="gps points", zorder=3)
             self.gps_ax.scatter(lons[0], lats[0], color="#16a34a", edgecolor="white", s=46, label="start", zorder=4)
             self.gps_ax.scatter(lons[-1], lats[-1], color="#dc2626", edgecolor="white", s=52, label="current", zorder=5)
             self.gps_ax.annotate(
@@ -1608,17 +1617,25 @@ class GroundStationMonitorApp(tk.Tk):
             self.gps_current_marker = self.gps_map_widget.set_marker(current_lat, current_lon, text="Current")
         else:
             self.gps_current_marker.set_position(current_lat, current_lon)
-        if len(positions) >= 2:
-            if self.gps_track_path is None:
-                self.gps_track_path = self.gps_map_widget.set_path(positions)
-            else:
-                self.gps_track_path.set_position_list(positions)
-        elif self.gps_track_path is not None:
+        if self.gps_track_path is not None:
             self.gps_track_path.delete()
             self.gps_track_path = None
+        self._sync_gps_point_markers(positions)
         self.gps_map_status_var.set(
             f"Map: {len(gps_packets)} GPS points, current {current_lat:.6f}, {current_lon:.6f}"
         )
+
+    def _sync_gps_point_markers(self, positions: list[tuple[float, float]]) -> None:
+        for index, (lat, lon) in enumerate(positions):
+            if index < len(self.gps_point_markers):
+                self.gps_point_markers[index].set_position(lat, lon)
+                continue
+            self.gps_point_markers.append(
+                self.gps_map_widget.set_marker(lat, lon, icon=self.gps_point_icon, icon_anchor="center")
+            )
+        while len(self.gps_point_markers) > len(positions):
+            marker = self.gps_point_markers.pop()
+            marker.delete()
 
     def _draw_osm_tiles(self, lons: list[float], lats: list[float]) -> tuple[int, bool]:
         tile_key = tuple(osm_tiles_for_points(lons, lats))
