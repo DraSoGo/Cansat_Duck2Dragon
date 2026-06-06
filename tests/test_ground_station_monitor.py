@@ -266,6 +266,17 @@ class GpsMapTests(unittest.TestCase):
 
         self.assertEqual(packets, [valid])
 
+    def test_valid_gps_packets_filters_coordinates_outside_map_bounds(self):
+        valid = self.packet()
+        bad_lat = self.packet(millis=2, lat=100.045662, lon=19.1)
+        bad_lon = self.packet(millis=3, lat=8.367500, lon=200.0)
+
+        packets = self.monitor.valid_gps_packets([valid, bad_lat, bad_lon])
+
+        self.assertEqual(packets, [valid])
+        self.assertFalse(bad_lat.gps_valid)
+        self.assertFalse(bad_lon.gps_valid)
+
     def test_gps_map_display_packets_preserves_full_short_tracks(self):
         packets = [self.packet(millis=index) for index in range(5)]
 

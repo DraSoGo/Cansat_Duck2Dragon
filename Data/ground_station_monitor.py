@@ -51,6 +51,9 @@ OSM_MAX_TILES_PER_REFRESH = 9
 OSM_TILE_USER_AGENT = "Duck2DragonMonitor/1.0"
 MERGE_SIDE_PANEL_WIDTH = 470
 GPS_MAP_MAX_DISPLAY_POINTS = 2000
+WEB_MERCATOR_MAX_LAT = 85.05112878
+MIN_LON = -180.0
+MAX_LON = 180.0
 OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
 OsmTileKey = tuple[int, int, int]
 OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
@@ -126,6 +129,8 @@ class TelemetryPacket:
             self.sats > 0
             and math.isfinite(self.lat)
             and math.isfinite(self.lon)
+            and -WEB_MERCATOR_MAX_LAT <= self.lat <= WEB_MERCATOR_MAX_LAT
+            and MIN_LON <= self.lon <= MAX_LON
             and not (self.lat == 0.0 and self.lon == 0.0)
         )
 
@@ -635,7 +640,7 @@ def gps_map_display_packets(
 
 
 def osm_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float]:
-    lat = max(min(lat, 85.05112878), -85.05112878)
+    lat = max(min(lat, WEB_MERCATOR_MAX_LAT), -WEB_MERCATOR_MAX_LAT)
     lat_rad = math.radians(lat)
     scale = 2 ** zoom
     x = (lon + 180.0) / 360.0 * scale
