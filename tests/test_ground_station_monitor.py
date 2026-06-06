@@ -586,6 +586,36 @@ class ReplayReaderTests(unittest.TestCase):
         self.assertAlmostEqual(fast_sleeps[0], 0.01)
         self.assertLess(fast_sleeps[0], slow_sleeps[0])
 
+    def test_replay_reader_does_not_delay_for_comment_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sample.csv"
+            path.write_text("# RSSI=-61 SNR=11.75\nfirst\n# RSSI=-62 SNR=10.75\nsecond\n")
+            sleeps = []
+            events = queue.Queue()
+            reader = self.monitor.ReplayReader(
+                path,
+                "port1",
+                events,
+                speed=1.0,
+                sleep_func=sleeps.append,
+            )
+
+            reader.run()
+
+            event_list = []
+            while not events.empty():
+                event_list.append(events.get_nowait())
+
+        self.assertEqual(sleeps, [0.05])
+        self.assertEqual(event_list[0]["status"], "replay")
+        self.assertEqual(event_list[0]["message"], "0/4 lines")
+        self.assertEqual(event_list[-1]["status"], "replay_done")
+        self.assertEqual(event_list[-1]["message"], "4/4 lines")
+        self.assertEqual(
+            [event["line"] for event in event_list if event["type"] == "line"],
+            ["# RSSI=-61 SNR=11.75", "first", "# RSSI=-62 SNR=10.75", "second"],
+        )
+
     def test_replay_reader_pause_during_delay_holds_next_line_until_resume(self):
         delay_seen = threading.Event()
         pause_wait_entered = threading.Event()

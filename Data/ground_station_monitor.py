@@ -480,8 +480,15 @@ class ReplayReader:
         return thread
 
     def run(self) -> None:
-        self.event_queue.put({"type": "status", "source": self.source, "status": "replay"})
+        total_lines = self._count_replay_lines()
+        self.event_queue.put({
+            "type": "status",
+            "source": self.source,
+            "status": "replay",
+            "message": f"0/{total_lines} lines",
+        })
         emitted = 0
+        emitted_data_rows = 0
         for line in self._iter_lines():
             if self.stop_event.is_set():
                 break
@@ -489,7 +496,8 @@ class ReplayReader:
                 self.sleep_func(0.05)
             if self.stop_event.is_set():
                 break
-            if emitted > 0:
+            is_comment = line.startswith("#")
+            if emitted_data_rows > 0 and not is_comment:
                 self.sleep_func(self._line_delay())
                 if self.stop_event.is_set():
                     break
@@ -505,7 +513,21 @@ class ReplayReader:
                 "mode": "replay",
             })
             emitted += 1
-        self.event_queue.put({"type": "status", "source": self.source, "status": "replay_done"})
+            if not is_comment:
+                emitted_data_rows += 1
+            if emitted == total_lines or emitted % 100 == 0:
+                self.event_queue.put({
+                    "type": "status",
+                    "source": self.source,
+                    "status": "replay",
+                    "message": f"{emitted}/{total_lines} lines",
+                })
+        self.event_queue.put({
+            "type": "status",
+            "source": self.source,
+            "status": "replay_done",
+            "message": f"{emitted}/{total_lines} lines",
+        })
 
     def run_once_for_test(self) -> None:
         for line in self._iter_lines():
@@ -545,6 +567,9 @@ class ReplayReader:
         if len(row) >= CSV_FIELD_COUNT + 1 and self._looks_like_log_time(row[0]):
             return ",".join(row[1 : 1 + CSV_FIELD_COUNT])
         return line
+
+    def _count_replay_lines(self) -> int:
+        return sum(1 for _line in self._iter_lines())
 
     def _looks_like_log_time(self, value: str) -> bool:
         try:
