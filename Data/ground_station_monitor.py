@@ -1537,11 +1537,18 @@ class GroundStationMonitorApp(tk.Tk):
 
     def _connect_port(self, source: str) -> None:
         port = self.port_vars[source].get().strip()
+        if not port:
+            self.status_vars[source].set("error: empty port")
+            self.summary_var.set(f"{source}: port field empty")
+            return
+
         try:
             baud = int(self.baud_vars[source].get().strip())
+            if not (9600 <= baud <= 921600):
+                raise ValueError("out of range")
         except ValueError:
-            self.status_vars[source].set("invalid baud")
-            self.summary_var.set(f"{source}: invalid baud")
+            self.status_vars[source].set("error: invalid baud")
+            self.summary_var.set(f"{source}: baud must be 9600-921600")
             return
         self.reader_generations[source] += 1
         generation = self.reader_generations[source]
