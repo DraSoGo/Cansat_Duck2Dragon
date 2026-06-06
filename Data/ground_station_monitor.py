@@ -50,6 +50,7 @@ OSM_TILE_RETRY_SECONDS = 60.0
 OSM_MAX_TILES_PER_REFRESH = 9
 OSM_TILE_USER_AGENT = "Duck2DragonMonitor/1.0"
 MERGE_SIDE_PANEL_WIDTH = 470
+GPS_MAP_MAX_DISPLAY_POINTS = 2000
 OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
 OsmTileKey = tuple[int, int, int]
 OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
@@ -593,6 +594,19 @@ def configure_window_icon(root: tk.Tk, icon_path: Path = APP_ICON_PATH) -> bool:
 
 def valid_gps_packets(packets: Iterable[TelemetryPacket]) -> list[TelemetryPacket]:
     return [packet for packet in packets if packet.gps_valid]
+
+
+def gps_map_display_packets(
+    packets: list[TelemetryPacket],
+    max_points: int = GPS_MAP_MAX_DISPLAY_POINTS,
+) -> list[TelemetryPacket]:
+    if len(packets) <= max_points:
+        return packets
+    if max_points < 2:
+        return packets[-max_points:] if max_points > 0 else []
+    last_index = len(packets) - 1
+    step = last_index / (max_points - 1)
+    return [packets[int(index * step)] for index in range(max_points - 1)] + [packets[-1]]
 
 
 def osm_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float]:
@@ -1504,7 +1518,7 @@ class GroundStationMonitorApp(tk.Tk):
 
     def _refresh_merge_charts(self) -> None:
         packets = self.merged_packets[-100:]
-        gps_packets = [packet for packet in packets if packet.gps_valid]
+        gps_packets = gps_map_display_packets(valid_gps_packets(self.merged_log_packets))
 
         if self.use_interactive_gps_map:
             self._refresh_interactive_gps_map(gps_packets)

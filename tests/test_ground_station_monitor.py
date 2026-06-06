@@ -266,6 +266,20 @@ class GpsMapTests(unittest.TestCase):
 
         self.assertEqual(packets, [valid])
 
+    def test_gps_map_display_packets_preserves_full_short_tracks(self):
+        packets = [self.packet(millis=index) for index in range(5)]
+
+        self.assertEqual(self.monitor.gps_map_display_packets(packets, max_points=10), packets)
+
+    def test_gps_map_display_packets_samples_long_tracks_with_start_and_current(self):
+        packets = [self.packet(millis=index, lat=8.0 + index) for index in range(10)]
+
+        display_packets = self.monitor.gps_map_display_packets(packets, max_points=4)
+
+        self.assertEqual(len(display_packets), 4)
+        self.assertIs(display_packets[0], packets[0])
+        self.assertIs(display_packets[-1], packets[-1])
+
     def test_osm_tile_projection_and_bounds_are_consistent(self):
         x, y = self.monitor.osm_tile_xy(0.0, 0.0, 1)
 
@@ -1181,6 +1195,83 @@ class GroundStationMonitorAppTests(unittest.TestCase):
             [(8.367500, 100.043922), (8.367900, 100.044500)],
         )
         self.assertIn("Map: 2 GPS points", app.gps_map_status_var.get())
+
+    def test_interactive_gps_map_keeps_full_track_beyond_chart_window(self):
+        class FakeMarker:
+            def __init__(self, lat, lon, text):
+                self.positions = [(lat, lon)]
+                self.text = text
+
+            def set_position(self, lat, lon):
+                self.positions.append((lat, lon))
+
+        class FakePath:
+            def __init__(self, positions):
+                self.position_lists = [list(positions)]
+
+            def set_position_list(self, positions):
+                self.position_lists.append(list(positions))
+
+            def delete(self):
+                pass
+
+        class FakeMapWidget:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.positions = []
+                self.markers = []
+                self.paths = []
+                self.zooms = []
+                FakeMapWidget.instances.append(self)
+
+            def pack(self, *args, **kwargs):
+                pass
+
+            def set_zoom(self, zoom):
+                self.zooms.append(zoom)
+
+            def set_position(self, lat, lon):
+                self.positions.append((lat, lon))
+
+            def set_marker(self, lat, lon, text=None):
+                marker = FakeMarker(lat, lon, text)
+                self.markers.append(marker)
+                return marker
+
+            def set_path(self, positions):
+                path = FakePath(positions)
+                self.paths.append(path)
+                return path
+
+        class FakeTkinterMapViewModule:
+            TkinterMapView = FakeMapWidget
+
+        original_map_module = self.monitor.tkintermapview
+        self.addCleanup(setattr, self.monitor, "tkintermapview", original_map_module)
+        self.monitor.tkintermapview = FakeTkinterMapViewModule
+        try:
+            app = self.monitor.GroundStationMonitorApp(use_interactive_map=True)
+        except self.monitor.tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        self.addCleanup(self.destroy_app, app)
+
+        app.port_states["port1"].record_link(-50, 9.0)
+        for index in range(125):
+            app._handle_line(
+                "port1",
+                self.packet_line(millis=1000 + index, lat=8.360000 + index * 0.00001, lon=100.040000),
+                arrival_time=1000.0 + index,
+            )
+        app._refresh_dirty_charts(force=True)
+
+        widget = FakeMapWidget.instances[-1]
+        self.assertEqual(widget.markers[0].positions[0], (8.36, 100.04))
+        self.assertEqual(widget.positions, [(8.36, 100.04)])
+        self.assertEqual(len(widget.paths[0].position_lists[-1]), 125)
+        self.assertEqual(widget.paths[0].position_lists[-1][0], (8.36, 100.04))
+        self.assertEqual(widget.markers[1].positions[-1], (8.36124, 100.04))
+        self.assertIn("Map: 125 GPS points", app.gps_map_status_var.get())
 
     def test_port_detail_includes_raw_snr_and_log_path(self):
         temp_dir = tempfile.TemporaryDirectory()
