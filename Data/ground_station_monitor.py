@@ -29,6 +29,7 @@ DEFAULT_BAUD = 115200
 DEFAULT_PORT_1 = "/dev/ttyACM0"
 DEFAULT_PORT_2 = "/dev/ttyUSB0"
 DATA_DIR = Path(__file__).resolve().parent
+APP_ICON_PATH = DATA_DIR.parent / "assets" / "D2D_logo.png"
 LOG_DIR = DATA_DIR / "logs"
 EVENT_DRAIN_BATCH_SIZE = 200
 CHART_REFRESH_INTERVAL_SECONDS = 0.25
@@ -492,6 +493,18 @@ def list_serial_ports() -> list[str]:
     return [port.device for port in sorted(list_ports.comports())]
 
 
+def configure_window_icon(root: tk.Tk, icon_path: Path = APP_ICON_PATH) -> bool:
+    if not icon_path.exists():
+        return False
+    try:
+        icon_image = tk.PhotoImage(file=str(icon_path))
+        root.iconphoto(True, icon_image)
+    except (OSError, tk.TclError):
+        return False
+    root._app_icon_image = icon_image
+    return True
+
+
 class SerialReader:
     def __init__(
         self,
@@ -622,6 +635,7 @@ class GroundStationMonitorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Duck2Dragon Monitor")
+        configure_window_icon(self)
         self.geometry("1280x820")
         self.event_queue: queue.Queue = queue.Queue()
         self.port_states = {"port1": PortState("port1"), "port2": PortState("port2")}

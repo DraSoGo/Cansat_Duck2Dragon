@@ -196,6 +196,49 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("| 23  | watt", readme)
 
 
+class WindowIconTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor_module()
+
+    def test_configure_window_icon_returns_false_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = object()
+            missing_path = pathlib.Path(tmp) / "missing.png"
+
+            configured = self.monitor.configure_window_icon(root, missing_path)
+
+        self.assertFalse(configured)
+
+    def test_configure_window_icon_sets_icon_and_keeps_photo_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            icon_path = pathlib.Path(tmp) / "logo.png"
+            icon_path.write_bytes(b"fake")
+
+            class FakeRoot:
+                def __init__(self):
+                    self.icon_calls = []
+
+                def iconphoto(self, default, image):
+                    self.icon_calls.append((default, image))
+
+            class FakePhotoImage:
+                def __init__(self, file):
+                    self.file = file
+
+            original_photo = self.monitor.tk.PhotoImage
+            self.addCleanup(setattr, self.monitor.tk, "PhotoImage", original_photo)
+            self.monitor.tk.PhotoImage = FakePhotoImage
+            root = FakeRoot()
+
+            configured = self.monitor.configure_window_icon(root, icon_path)
+
+        self.assertTrue(configured)
+        self.assertEqual(len(root.icon_calls), 1)
+        self.assertTrue(root.icon_calls[0][0])
+        self.assertIs(root.icon_calls[0][1], root._app_icon_image)
+        self.assertEqual(root._app_icon_image.file, str(icon_path))
+
+
 class MergeBufferTests(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
