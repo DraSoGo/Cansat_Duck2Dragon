@@ -50,6 +50,43 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(packet.rssi, -61)
         self.assertAlmostEqual(packet.snr, 11.75)
 
+    def test_parse_legacy_23_field_packet_computes_watt(self):
+        line = (
+            "692167,8.384282,100.062355,2427.30,5,22.25,48.67,1010.58,"
+            "0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.968,-116.500"
+        )
+
+        packet = self.monitor.TelemetryParser.parse_packet(
+            line,
+            source="port1",
+            rssi=-92,
+            snr=11.75,
+            arrival_time=1000.0,
+        )
+
+        self.assertEqual(packet.millis, 692167)
+        self.assertAlmostEqual(packet.voltage, 3.968)
+        self.assertAlmostEqual(packet.current, -116.500)
+        self.assertAlmostEqual(packet.watt, 3.968 * -116.500 / 1000.0)
+
+    def test_parse_legacy_trailing_empty_watt_packet_computes_watt(self):
+        line = (
+            "692167,8.384282,100.062355,2427.30,5,22.25,48.67,1010.58,"
+            "0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,"
+            "1.0000,0.0000,0.0000,0.0000,0.00,0.00,0.00,3.968,-116.500,"
+        )
+
+        packet = self.monitor.TelemetryParser.parse_packet(
+            line,
+            source="port1",
+            rssi=-92,
+            snr=11.75,
+            arrival_time=1000.0,
+        )
+
+        self.assertAlmostEqual(packet.watt, 3.968 * -116.500 / 1000.0)
+
     def test_rejects_wrong_field_count(self):
         with self.assertRaises(ValueError) as ctx:
             self.monitor.TelemetryParser.parse_packet(

@@ -192,10 +192,15 @@ class TelemetryParser:
         arrival_time: Optional[float] = None,
     ) -> TelemetryPacket:
         parts = [part.strip() for part in line.split(",")]
+        if len(parts) == CSV_FIELD_COUNT - 1:
+            parts.append("")
         if len(parts) != CSV_FIELD_COUNT:
             raise ValueError(f"expected 24 fields, got {len(parts)}")
 
         try:
+            voltage = float(parts[21])
+            current = float(parts[22])
+            watt = float(parts[23]) if parts[23] else voltage * current / 1000.0
             values = {
                 "millis": int(parts[0]),
                 "lat": float(parts[1]),
@@ -218,9 +223,9 @@ class TelemetryParser:
                 "high_ax": float(parts[18]),
                 "high_ay": float(parts[19]),
                 "high_az": float(parts[20]),
-                "voltage": float(parts[21]),
-                "current": float(parts[22]),
-                "watt": float(parts[23]),
+                "voltage": voltage,
+                "current": current,
+                "watt": watt,
             }
         except ValueError as exc:
             raise ValueError(f"invalid numeric field: {exc}") from exc
