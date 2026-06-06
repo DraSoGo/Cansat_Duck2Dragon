@@ -1108,9 +1108,13 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         class FakePath:
             def __init__(self, positions):
                 self.position_lists = [list(positions)]
+                self.deleted = False
 
             def set_position_list(self, positions):
                 self.position_lists.append(list(positions))
+
+            def delete(self):
+                self.deleted = True
 
         class FakeMapWidget:
             instances = []
@@ -1156,10 +1160,18 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app.port_states["port1"].record_link(-50, 9.0)
         app._handle_line("port1", self.packet_line(millis=20, lat=8.367500, lon=100.043922), arrival_time=1000.0)
         app._refresh_dirty_charts(force=True)
+
+        widget = FakeMapWidget.instances[-1]
+        self.assertEqual(widget.positions, [(8.367500, 100.043922)])
+        self.assertEqual(widget.markers[0].text, "Start")
+        self.assertEqual(widget.markers[1].text, "Current")
+        self.assertEqual(widget.markers[1].positions[-1], (8.367500, 100.043922))
+        self.assertEqual(widget.paths, [])
+        self.assertIn("Map: 1 GPS points", app.gps_map_status_var.get())
+
         app._handle_line("port1", self.packet_line(millis=21, lat=8.367900, lon=100.044500), arrival_time=1001.0)
         app._refresh_dirty_charts(force=True)
 
-        widget = FakeMapWidget.instances[-1]
         self.assertEqual(widget.positions, [(8.367500, 100.043922)])
         self.assertEqual(widget.markers[0].text, "Start")
         self.assertEqual(widget.markers[1].text, "Current")

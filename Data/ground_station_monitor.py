@@ -1594,10 +1594,14 @@ class GroundStationMonitorApp(tk.Tk):
             self.gps_current_marker = self.gps_map_widget.set_marker(current_lat, current_lon, text="Current")
         else:
             self.gps_current_marker.set_position(current_lat, current_lon)
-        if self.gps_track_path is None:
-            self.gps_track_path = self.gps_map_widget.set_path(positions)
-        else:
-            self.gps_track_path.set_position_list(positions)
+        if len(positions) >= 2:
+            if self.gps_track_path is None:
+                self.gps_track_path = self.gps_map_widget.set_path(positions)
+            else:
+                self.gps_track_path.set_position_list(positions)
+        elif self.gps_track_path is not None:
+            self.gps_track_path.delete()
+            self.gps_track_path = None
         self.gps_map_status_var.set(
             f"Map: {len(gps_packets)} GPS points, current {current_lat:.6f}, {current_lon:.6f}"
         )
