@@ -831,9 +831,7 @@ class GroundStationMonitorApp(tk.Tk):
     def _build_controls(self) -> None:
         frame = ttk.Frame(self, padding=8)
         frame.grid(row=0, column=0, sticky="ew")
-        for index in range(14):
-            frame.columnconfigure(index, weight=0)
-        frame.columnconfigure(11, weight=1)
+        frame.columnconfigure(0, weight=1)
 
         self.port_vars = {
             "port1": tk.StringVar(value=DEFAULT_PORT_1),
@@ -851,50 +849,57 @@ class GroundStationMonitorApp(tk.Tk):
         self.replay_speed_var = tk.StringVar(value="1.0")
         self.replay_pause_var = tk.StringVar(value="Pause Replay")
 
-        ttk.Label(frame, text="Port 1").grid(row=0, column=0, padx=4)
-        self.port1_combo = ttk.Combobox(frame, textvariable=self.port_vars["port1"], width=18)
-        self.port1_combo.grid(row=0, column=1, padx=4)
-        ttk.Entry(frame, textvariable=self.baud_vars["port1"], width=8).grid(row=0, column=2, padx=4)
-        ttk.Button(frame, text="Connect 1", command=lambda: self._connect_port("port1")).grid(row=0, column=3, padx=4)
-        ttk.Label(frame, textvariable=self.status_vars["port1"]).grid(row=0, column=4, padx=4)
+        port1_row = ttk.Frame(frame)
+        port1_row.grid(row=0, column=0, sticky="", pady=(0, 4))
+        ttk.Label(port1_row, text="Port 1").pack(side="left", padx=4)
+        self.port1_combo = ttk.Combobox(port1_row, textvariable=self.port_vars["port1"], width=18)
+        self.port1_combo.pack(side="left", padx=4)
+        ttk.Entry(port1_row, textvariable=self.baud_vars["port1"], width=8).pack(side="left", padx=4)
+        ttk.Button(port1_row, text="Connect 1", command=lambda: self._connect_port("port1")).pack(side="left", padx=4)
+        ttk.Label(port1_row, textvariable=self.status_vars["port1"]).pack(side="left", padx=4)
         self.disconnect1_button = ttk.Button(
-            frame,
+            port1_row,
             text="Disconnect 1",
             command=lambda: self._disconnect_port("port1"),
         )
-        self.disconnect1_button.grid(row=0, column=5, padx=2)
+        self.disconnect1_button.pack(side="left", padx=2)
 
-        ttk.Label(frame, text="Port 2").grid(row=0, column=6, padx=4)
-        self.port2_combo = ttk.Combobox(frame, textvariable=self.port_vars["port2"], width=18)
-        self.port2_combo.grid(row=0, column=7, padx=4)
-        ttk.Entry(frame, textvariable=self.baud_vars["port2"], width=8).grid(row=0, column=8, padx=4)
-        ttk.Button(frame, text="Connect 2", command=lambda: self._connect_port("port2")).grid(row=0, column=9, padx=4)
-        ttk.Label(frame, textvariable=self.status_vars["port2"]).grid(row=0, column=10, padx=4)
+        port2_row = ttk.Frame(frame)
+        port2_row.grid(row=1, column=0, sticky="", pady=(0, 4))
+        ttk.Label(port2_row, text="Port 2").pack(side="left", padx=4)
+        self.port2_combo = ttk.Combobox(port2_row, textvariable=self.port_vars["port2"], width=18)
+        self.port2_combo.pack(side="left", padx=4)
+        ttk.Entry(port2_row, textvariable=self.baud_vars["port2"], width=8).pack(side="left", padx=4)
+        ttk.Button(port2_row, text="Connect 2", command=lambda: self._connect_port("port2")).pack(side="left", padx=4)
+        ttk.Label(port2_row, textvariable=self.status_vars["port2"]).pack(side="left", padx=4)
         self.disconnect2_button = ttk.Button(
-            frame,
+            port2_row,
             text="Disconnect 2",
             command=lambda: self._disconnect_port("port2"),
         )
-        self.disconnect2_button.grid(row=0, column=11, padx=2, sticky="w")
+        self.disconnect2_button.pack(side="left", padx=2)
 
-        ttk.Button(frame, text="Refresh Ports", command=self._refresh_ports).grid(row=1, column=0, padx=4, pady=(6, 0))
-        ttk.Button(frame, text="Start Logging", command=self._start_logging).grid(row=1, column=1, padx=4, pady=(6, 0))
-        self.stop_logging_button = ttk.Button(frame, text="Stop Logging", command=self._stop_logging)
-        self.stop_logging_button.grid(row=1, column=2, padx=2, pady=(6, 0))
-        ttk.Button(frame, text="Replay Log", command=self._choose_replay_file).grid(row=1, column=3, padx=4, pady=(6, 0))
-        ttk.Label(frame, text="Replay x").grid(row=1, column=4, padx=2, pady=(6, 0))
-        ttk.Entry(frame, textvariable=self.replay_speed_var, width=5).grid(row=1, column=5, padx=2, pady=(6, 0))
+        action_row = ttk.Frame(frame)
+        action_row.grid(row=2, column=0, sticky="", pady=(2, 0))
+        ttk.Button(action_row, text="Refresh Ports", command=self._refresh_ports).pack(side="left", padx=4)
+        ttk.Button(action_row, text="Start Logging", command=self._start_logging).pack(side="left", padx=4)
+        self.stop_logging_button = ttk.Button(action_row, text="Stop Logging", command=self._stop_logging)
+        self.stop_logging_button.pack(side="left", padx=2)
+        ttk.Button(action_row, text="Replay Log", command=self._choose_replay_file).pack(side="left", padx=4)
+        ttk.Label(action_row, text="Replay x").pack(side="left", padx=2)
+        ttk.Entry(action_row, textvariable=self.replay_speed_var, width=5).pack(side="left", padx=2)
         self.replay_pause_button = ttk.Button(
-            frame,
+            action_row,
             textvariable=self.replay_pause_var,
             command=self._toggle_replay_pause,
         )
-        self.replay_pause_button.grid(row=1, column=6, padx=2, pady=(6, 0))
-        self.replay_stop_button = ttk.Button(frame, text="Stop Replay", command=self._stop_replay)
-        self.replay_stop_button.grid(row=1, column=7, padx=2, pady=(6, 0))
-        self.theme_button = ttk.Button(frame, textvariable=self.theme_button_var, command=self._toggle_theme)
-        self.theme_button.grid(row=1, column=8, padx=2, pady=(6, 0))
-        ttk.Label(frame, textvariable=self.summary_var).grid(row=1, column=9, columnspan=3, padx=8, pady=(6, 0), sticky="ew")
+        self.replay_pause_button.pack(side="left", padx=2)
+        self.replay_stop_button = ttk.Button(action_row, text="Stop Replay", command=self._stop_replay)
+        self.replay_stop_button.pack(side="left", padx=2)
+        self.theme_button = ttk.Button(action_row, textvariable=self.theme_button_var, command=self._toggle_theme)
+        self.theme_button.pack(side="left", padx=2)
+
+        ttk.Label(frame, textvariable=self.summary_var).grid(row=3, column=0, sticky="", pady=(4, 0))
         self._refresh_ports()
 
     def _build_tabs(self) -> None:
