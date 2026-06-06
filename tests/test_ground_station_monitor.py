@@ -1583,11 +1583,13 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app._choose_replay_file()
         self.assertEqual(FakeReplayReader.instances[-1].path, replay_path)
         self.assertEqual(FakeReplayReader.instances[-1].speed, 2.5)
+        first_reader = FakeReplayReader.instances[-1]
 
         app.replay_speed_var.set("bad")
         app._choose_replay_file()
         self.assertEqual(FakeReplayReader.instances[-1].speed, 1.0)
         self.assertEqual(app.replay_speed_var.get(), "1.0")
+        self.assertTrue(first_reader.stopped)
 
         self.assertTrue(app.replay_pause_button.winfo_exists())
         self.assertTrue(app.replay_stop_button.winfo_exists())
@@ -1595,17 +1597,74 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app._toggle_replay_pause()
         self.assertTrue(app.replay_paused)
         self.assertEqual(app.replay_pause_var.get(), "Resume Replay")
-        self.assertTrue(all(reader.paused for reader in FakeReplayReader.instances))
+        self.assertTrue(all(reader.paused for reader in app.replay_readers))
 
         app._toggle_replay_pause()
         self.assertFalse(app.replay_paused)
         self.assertEqual(app.replay_pause_var.get(), "Pause Replay")
-        self.assertTrue(all(reader.resume_count == 1 for reader in FakeReplayReader.instances))
+        self.assertTrue(all(reader.resume_count == 1 for reader in app.replay_readers))
 
         app._stop_replay()
         self.assertEqual(app.replay_readers, [])
         self.assertEqual(app.replay_threads, [])
         self.assertTrue(all(reader.stopped for reader in FakeReplayReader.instances))
+
+    def test_replay_done_clears_active_replay_state_for_next_run(self):
+        app = self.make_app()
+
+        class FakeReplayReader:
+            def __init__(self):
+                self.stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        class FakeThread:
+            def __init__(self):
+                self.joined = False
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                self.joined = True
+
+        reader = FakeReplayReader()
+        thread = FakeThread()
+        app.replay_readers.append(reader)
+        app.replay_threads.append(thread)
+
+        app._handle_event({"type": "status", "source": "port1", "status": "replay_done", "message": "42/42 lines"})
+
+        self.assertTrue(reader.stopped)
+        self.assertTrue(thread.joined)
+        self.assertEqual(app.replay_readers, [])
+        self.assertEqual(app.replay_threads, [])
+        self.assertFalse(app.replay_paused)
+        self.assertEqual(app.replay_pause_var.get(), "Pause Replay")
+
+    def test_reset_session_button_clears_replay_data_without_app_restart(self):
+        app = self.make_app()
+
+        app._handle_line("port1", self.packet_line(millis=10), arrival_time=1000.0)
+        app._record_event("Launch")
+
+        self.assertTrue(app.reset_session_button.winfo_exists())
+        self.assertGreater(app.merged_count, 0)
+        self.assertGreater(len(app.merged_tree.get_children()), 0)
+        self.assertGreater(len(app.timeline_tree.get_children()), 0)
+
+        app._reset_session()
+
+        self.assertEqual(app.merged_count, 0)
+        self.assertEqual(app.merged_packets, [])
+        self.assertEqual(app.merged_log_packets, [])
+        self.assertEqual(app.merge_buffer.selected, {})
+        self.assertEqual(len(app.merged_tree.get_children()), 0)
+        self.assertEqual(len(app.timeline_tree.get_children()), 0)
+        self.assertEqual(app.port_states["port1"].packet_count, 0)
+        self.assertEqual(app.status_vars["port1"].get(), "offline")
+        self.assertIn("Session reset", app.summary_var.get())
 
     def test_port_alerts_and_stale_alerts_are_visible_in_dashboard(self):
         app = self.make_app()

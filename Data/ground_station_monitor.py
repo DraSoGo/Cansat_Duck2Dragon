@@ -1072,6 +1072,8 @@ class GroundStationMonitorApp(tk.Tk):
         self.replay_pause_button.pack(side="left", padx=2)
         self.replay_stop_button = ttk.Button(action_row, text="Stop Replay", command=self._stop_replay)
         self.replay_stop_button.pack(side="left", padx=2)
+        self.reset_session_button = ttk.Button(action_row, text="Reset Session", command=self._reset_session)
+        self.reset_session_button.pack(side="left", padx=4)
         self.theme_button = ttk.Button(action_row, textvariable=self.theme_button_var, command=self._toggle_theme)
         self.theme_button.pack(side="left", padx=2)
 
@@ -1584,6 +1586,8 @@ class GroundStationMonitorApp(tk.Tk):
         )
         if not path:
             return
+        self._stop_replay(message="")
+        self._clear_session_data()
         self._start_logging()
         try:
             speed = float(self.replay_speed_var.get())
@@ -1613,19 +1617,83 @@ class GroundStationMonitorApp(tk.Tk):
         self.replay_pause_var.set("Resume Replay")
         self.summary_var.set("Replay paused")
 
-    def _stop_replay(self) -> None:
+    def _stop_replay(self, message: str = "Replay stopped") -> None:
         if not self.replay_readers:
-            self.summary_var.set("No replay active")
+            if message:
+                self.summary_var.set("No replay active")
             return
         for reader in self.replay_readers:
             reader.stop()
-        for thread in self.replay_threads:
+        for thread in list(self.replay_threads):
             self._join_reader_thread(thread)
         self.replay_readers.clear()
         self.replay_threads.clear()
         self.replay_paused = False
         self.replay_pause_var.set("Pause Replay")
-        self.summary_var.set("Replay stopped")
+        if message:
+            self.summary_var.set(message)
+
+    def _reset_session(self) -> None:
+        self._stop_replay(message="")
+        self._stop_logging()
+        for source in list(self.readers):
+            self.reader_generations[source] += 1
+            self._stop_reader(source)
+        self._clear_session_data()
+        self.summary_var.set("Session reset")
+
+    def _clear_session_data(self) -> None:
+        for source, state in self.port_states.items():
+            state.status = "offline"
+            state.message = ""
+            state.latest_raw_line = ""
+            state.latest_packet = None
+            state.latest_rssi = None
+            state.latest_snr = None
+            state.packet_count = 0
+            state.malformed_count = 0
+            state.last_seen_time = None
+            state.recent_malformed = 0
+            self.port_packets[source].clear()
+            self.dirty_port_charts[source] = True
+            self.status_vars[source].set("offline")
+            self._update_port_view(source, refresh_charts=False)
+        self.merge_buffer = MergeBuffer()
+        self.merged_count = 0
+        self.merged_log_packets.clear()
+        self.merged_packets.clear()
+        self.event_markers.clear()
+        self.timeline_tree.delete(*self.timeline_tree.get_children())
+        self._clear_gps_map_state()
+        self.orientation_packet = None
+        self.last_bno_orientation_rotation = None
+        self.orientation_view_elev = ORIENTATION_VIEW_ELEV
+        self.orientation_view_azim = ORIENTATION_VIEW_AZIM
+        self.orientation_drag_start = None
+        self.merge_status_var.set("No merged packets")
+        self.readout_var.set("Lat/Lon: --\nSats: --\nVoltage: --\nCurrent: --\nWatt: --\nRSSI: --")
+        self.merged_tree.delete(*self.merged_tree.get_children())
+        self._refresh_orientation_model(None)
+        self._refresh_merge_charts()
+
+    def _clear_gps_map_state(self) -> None:
+        for item_name in ("gps_start_marker", "gps_current_marker", "gps_track_path"):
+            item = getattr(self, item_name, None)
+            if item is not None:
+                try:
+                    item.delete()
+                except Exception:
+                    pass
+                setattr(self, item_name, None)
+        for marker in self.gps_point_markers:
+            try:
+                marker.delete()
+            except Exception:
+                pass
+        self.gps_point_markers.clear()
+        self.gps_map_centered = False
+        if hasattr(self, "gps_map_status_var"):
+            self.gps_map_status_var.set("Map: waiting for GPS fix")
 
     def _record_event(self, name: str) -> None:
         timestamp = time.time()
@@ -1686,6 +1754,8 @@ class GroundStationMonitorApp(tk.Tk):
             message = event.get("message", "")
             state.record_status(status, message)
             self.status_vars[source].set(f"{status}: {message}" if message else status)
+            if status == "replay_done":
+                self._stop_replay(message=f"Replay finished: {message}" if message else "Replay finished")
             return
         if event_type == "line" and source in self.port_states:
             self._handle_line(source, event["line"], event.get("arrival_time", time.time()))
