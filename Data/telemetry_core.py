@@ -111,3 +111,48 @@ class TelemetryPacket:
             f"{self.current:.3f}",
             f"{self.watt:.3f}",
         ]
+
+
+@dataclass
+class PortState:
+    source: str
+    status: str = "offline"
+    message: str = ""
+    latest_raw_line: str = ""
+    latest_packet: Optional[TelemetryPacket] = None
+    latest_rssi: Optional[int] = None
+    latest_snr: Optional[float] = None
+    packet_count: int = 0
+    malformed_count: int = 0
+    last_seen_time: Optional[float] = None
+    recent_malformed: int = 0
+    first_packet_millis: Optional[int] = None
+
+    def record_status(self, status: str, message: str = "") -> None:
+        self.status = status
+        self.message = message
+
+    def record_raw(self, line: str, arrival_time: float) -> None:
+        self.latest_raw_line = line
+        self.last_seen_time = arrival_time
+
+    def record_link(self, rssi: Optional[int], snr: Optional[float]) -> None:
+        if rssi is not None:
+            self.latest_rssi = rssi
+        if snr is not None:
+            self.latest_snr = snr
+
+    def record_packet(self, packet: TelemetryPacket) -> None:
+        if self.first_packet_millis is None:
+            self.first_packet_millis = packet.millis
+        self.latest_packet = packet
+        self.packet_count += 1
+        self.recent_malformed = 0
+        self.last_seen_time = packet.arrival_time
+
+    def record_malformed(self, line: str, arrival_time: Optional[float] = None) -> None:
+        self.latest_raw_line = line
+        self.malformed_count += 1
+        self.recent_malformed += 1
+        if arrival_time is not None:
+            self.last_seen_time = arrival_time
