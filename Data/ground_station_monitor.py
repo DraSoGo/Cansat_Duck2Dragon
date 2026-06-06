@@ -744,6 +744,7 @@ class GroundStationMonitorApp(tk.Tk):
             )
         self.timeline_tree = self._make_tree(event_frame, ("time", "event"), height=4)
         self.timeline_tree.pack(fill="x", pady=(0, 4))
+        ttk.Button(side, text="Export Merged CSV", command=self._export_merged_csv).pack(fill="x", pady=4)
         self.merged_tree = self._make_tree(side, ("millis", "source", "alt_baro", "voltage", "rssi"))
         self.merged_tree.pack(fill="both", expand=True, pady=8)
 
@@ -1302,6 +1303,39 @@ class GroundStationMonitorApp(tk.Tk):
         if self.log_writer is not None:
             self.log_writer.write_event(name)
         self.summary_var.set(f"Event: {name}")
+
+    def _export_merged_csv(self) -> None:
+        if not self.merged_log_packets:
+            self.summary_var.set("No data to export")
+            return
+
+        default_name = f"merged_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path = filedialog.asksaveasfilename(
+            title="Export Merged CSV",
+            initialdir=str(DATA_DIR),
+            initialfile=default_name,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+
+        if not path:
+            return
+
+        try:
+            with open(path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['time', 'millis', 'lat', 'lon', 'alt_gps', 'sats', 'alt_baro', 'temp', 'pressure',
+                               'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'qw', 'qx', 'qy', 'qz',
+                               'high_ax', 'high_ay', 'high_az', 'voltage', 'current', 'watt', 'source', 'rssi', 'snr'])
+                for packet in self.merged_log_packets:
+                    rssi = "" if packet.rssi is None else str(packet.rssi)
+                    snr = "" if packet.snr is None else f"{packet.snr:.2f}"
+                    row = [datetime.fromtimestamp(packet.arrival_time).isoformat(timespec='seconds')] + packet.csv_values() + [packet.source, rssi, snr]
+                    writer.writerow(row)
+
+            self.summary_var.set(f"Exported {len(self.merged_log_packets)} packets to {Path(path).name}")
+        except Exception as exc:
+            self.summary_var.set(f"Export failed: {exc}")
 
     def _drain_events(self) -> None:
         processed = 0
