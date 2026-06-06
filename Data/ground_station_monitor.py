@@ -1454,6 +1454,23 @@ class GroundStationMonitorApp(tk.Tk):
         if replaced_visible_packet:
             self._update_merge_view(display_packet=packet, rebuild_tree=True)
 
+    def calculate_packet_loss(state: PortState) -> tuple[int, float]:
+        """Return (expected_count, loss_percent)."""
+        if not state.latest_packet or state.first_packet_millis is None:
+            return 0, 0.0
+
+        first_millis = state.first_packet_millis
+        last_millis = state.latest_packet.millis
+        span_seconds = (last_millis - first_millis) / 1000.0
+        expected = int(span_seconds * 10)
+
+        if expected == 0:
+            return 0, 0.0
+
+        received = state.packet_count
+        loss_percent = max(0.0, (expected - received) / expected * 100)
+        return expected, loss_percent
+
     def _update_port_view(
         self,
         source: str,
@@ -1481,9 +1498,14 @@ class GroundStationMonitorApp(tk.Tk):
                 f"Alerts: {alerts_text}"
             )
             return
+        expected, loss_pct = self.calculate_packet_loss(state)
+        if expected > 0:
+            packet_line = f"Packets: {state.packet_count} / ~{expected} ({loss_pct:.1f}% loss)  Malformed: {state.malformed_count}"
+        else:
+            packet_line = f"Packets: {state.packet_count}  Malformed: {state.malformed_count}"
         detail_var.set(
             f"{source}: {state.status}\n"
-            f"Packets: {state.packet_count}  Malformed: {state.malformed_count}\n"
+            f"{packet_line}\n"
             f"Alt: {packet.alt_baro:.2f} m  Voltage: {packet.voltage:.3f} V  "
             f"RSSI: {packet.rssi if packet.rssi is not None else '--'}  "
             f"SNR: {packet_snr_text}\n"
