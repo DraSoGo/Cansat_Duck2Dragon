@@ -36,3 +36,78 @@ MALFORMED_BURST_THRESHOLD = 5
 ORIENTATION_VERTICAL_DEGREES = 25.0
 ORIENTATION_HORIZONTAL_DEGREES = 65.0
 ORIENTATION_IDENTITY_EPS = 1e-4
+
+
+@dataclass(frozen=True)
+class TelemetryPacket:
+    raw_line: str
+    source: str
+    arrival_time: float
+    rssi: Optional[int]
+    snr: Optional[float]
+    millis: int
+    lat: float
+    lon: float
+    alt_gps: float
+    sats: int
+    alt_baro: float
+    temp: float
+    pressure: float
+    ax: float
+    ay: float
+    az: float
+    gx: float
+    gy: float
+    gz: float
+    qw: float
+    qx: float
+    qy: float
+    qz: float
+    high_ax: float
+    high_ay: float
+    high_az: float
+    voltage: float
+    current: float
+    watt: float
+
+    @property
+    def gps_valid(self) -> bool:
+        return (
+            self.sats > 0
+            and math.isfinite(self.lat)
+            and math.isfinite(self.lon)
+            and -WEB_MERCATOR_MAX_LAT <= self.lat <= WEB_MERCATOR_MAX_LAT
+            and MIN_LON <= self.lon <= MAX_LON
+        )
+
+    @property
+    def accel_mag(self) -> float:
+        return math.sqrt(self.ax * self.ax + self.ay * self.ay + self.az * self.az)
+
+    def csv_values(self) -> list[str]:
+        return [
+            str(self.millis),
+            f"{self.lat:.6f}",
+            f"{self.lon:.6f}",
+            f"{self.alt_gps:.2f}",
+            str(self.sats),
+            f"{self.alt_baro:.2f}",
+            f"{self.temp:.2f}",
+            f"{self.pressure:.2f}",
+            f"{self.ax:.4f}",
+            f"{self.ay:.4f}",
+            f"{self.az:.4f}",
+            f"{self.gx:.4f}",
+            f"{self.gy:.4f}",
+            f"{self.gz:.4f}",
+            f"{self.qw:.4f}",
+            f"{self.qx:.4f}",
+            f"{self.qy:.4f}",
+            f"{self.qz:.4f}",
+            f"{self.high_ax:.2f}",
+            f"{self.high_ay:.2f}",
+            f"{self.high_az:.2f}",
+            f"{self.voltage:.3f}",
+            f"{self.current:.3f}",
+            f"{self.watt:.3f}",
+        ]
