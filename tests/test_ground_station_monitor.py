@@ -764,6 +764,7 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         app._handle_line("port1", self.packet_line(millis=10), arrival_time=1000.0)
         app.port_states["port2"].record_link(-70, 8.0)
         app._handle_line("port2", self.packet_line(millis=11), arrival_time=1001.0)
+        app._refresh_dirty_charts(force=True)
 
         self.assertGreaterEqual(len(app.gps_ax.lines), 1)
         self.assertEqual(app.gps_ax.get_xlabel(), "longitude")
@@ -780,10 +781,12 @@ class GroundStationMonitorAppTests(unittest.TestCase):
 
         app.port_states["port1"].record_link(-50, 9.0)
         app._handle_line("port1", self.packet_line(millis=1), arrival_time=1000.0)
+        app._refresh_dirty_charts(force=True)
         self.assertEqual([line.get_label() for line in app.link_ax.lines], ["Port 1 RSSI", "Port 1 SNR"])
 
         app.port_states["port2"].record_link(-80, 8.0)
         app._handle_line("port2", self.packet_line(millis=1), arrival_time=1001.0)
+        app._refresh_dirty_charts(force=True)
 
         self.assertEqual(app.merged_count, 1)
         self.assertEqual(app.merge_buffer.selected[1].source, "port1")

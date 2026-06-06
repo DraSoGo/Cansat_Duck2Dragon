@@ -30,6 +30,8 @@ DEFAULT_PORT_1 = "/dev/ttyACM0"
 DEFAULT_PORT_2 = "/dev/ttyUSB0"
 DATA_DIR = Path(__file__).resolve().parent
 LOG_DIR = DATA_DIR / "logs"
+EVENT_DRAIN_BATCH_SIZE = 200
+CHART_REFRESH_INTERVAL_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -592,6 +594,9 @@ class GroundStationMonitorApp(tk.Tk):
         self.merged_log_packets: list[TelemetryPacket] = []
         self.merged_packets: list[TelemetryPacket] = []
         self.port_packets = {"port1": [], "port2": []}
+        self.dirty_merge_charts = False
+        self.dirty_port_charts = {"port1": False, "port2": False}
+        self.last_chart_refresh = 0.0
         self._build_ui()
         self.after(100, self._drain_events)
 
@@ -899,14 +904,18 @@ class GroundStationMonitorApp(tk.Tk):
         self.summary_var.set(f"Event: {name}")
 
     def _drain_events(self) -> None:
-        while True:
+        processed = 0
+        while processed < EVENT_DRAIN_BATCH_SIZE:
             try:
                 event = self.event_queue.get_nowait()
             except queue.Empty:
                 break
             self._handle_event(event)
+            processed += 1
         self._update_summary()
-        self.after(100, self._drain_events)
+        self._refresh_dirty_charts()
+        delay_ms = 1 if processed == EVENT_DRAIN_BATCH_SIZE and not self.event_queue.empty() else 50
+        self.after(delay_ms, self._drain_events)
 
     def _handle_event(self, event: dict) -> None:
         event_type = event.get("type")
@@ -943,7 +952,7 @@ class GroundStationMonitorApp(tk.Tk):
             packet = TelemetryParser.parse_packet(line, source, state.latest_rssi, state.latest_snr, arrival_time)
         except ValueError:
             state.record_malformed(line, arrival_time)
-            self._update_port_view(source)
+            self._update_port_view(source, refresh_charts=False)
             return
         state.record_packet(packet)
         self.port_packets[source].append(packet)
@@ -958,9 +967,10 @@ class GroundStationMonitorApp(tk.Tk):
                 selected = previous_selected
         else:
             selected = self.merge_buffer.add(packet)
-        self._update_port_view(source, packet)
+        self._update_port_view(source, packet, refresh_charts=False)
+        self._mark_port_charts_dirty(source)
         if selected is not packet:
-            self._refresh_merge_charts()
+            self._mark_merge_charts_dirty()
             return
         if previous_selected is None:
             self.merged_count += 1
@@ -1084,10 +1094,10 @@ class GroundStationMonitorApp(tk.Tk):
                 self.merged_tree.delete(item)
             for merged_packet in self.merged_packets[-200:]:
                 self._insert_merged_row(merged_packet)
-            self._refresh_merge_charts()
+            self._mark_merge_charts_dirty()
             return
         self._insert_merged_row(packet)
-        self._refresh_merge_charts()
+        self._mark_merge_charts_dirty()
 
     def _insert_merged_row(self, packet: TelemetryPacket) -> None:
         self.merged_tree.insert(
@@ -1195,6 +1205,29 @@ class GroundStationMonitorApp(tk.Tk):
             if plotted and len(plot_series) > 1:
                 axis.legend(loc="best")
             canvas.draw_idle()
+
+    def _mark_merge_charts_dirty(self) -> None:
+        self.dirty_merge_charts = True
+
+    def _mark_port_charts_dirty(self, source: str) -> None:
+        self.dirty_port_charts[source] = True
+
+    def _refresh_dirty_charts(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self.last_chart_refresh < CHART_REFRESH_INTERVAL_SECONDS:
+            return
+        refreshed = False
+        if self.dirty_merge_charts:
+            self._refresh_merge_charts()
+            self.dirty_merge_charts = False
+            refreshed = True
+        for source, dirty in list(self.dirty_port_charts.items()):
+            if dirty:
+                self._refresh_port_charts(source)
+                self.dirty_port_charts[source] = False
+                refreshed = True
+        if refreshed:
+            self.last_chart_refresh = now
 
     def _update_summary(self, now: Optional[float] = None) -> None:
         current_time = time.time() if now is None else now
