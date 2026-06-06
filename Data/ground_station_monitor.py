@@ -49,6 +49,7 @@ OSM_TILE_TIMEOUT_SECONDS = 0.35
 OSM_TILE_RETRY_SECONDS = 60.0
 OSM_MAX_TILES_PER_REFRESH = 9
 OSM_TILE_USER_AGENT = "Duck2DragonMonitor/1.0"
+MERGE_SIDE_PANEL_WIDTH = 470
 OSM_FAILED_TILES: dict[tuple[int, int, int], float] = {}
 OsmTileKey = tuple[int, int, int]
 OsmTileLayer = tuple[np.ndarray, tuple[float, float, float, float]]
@@ -955,8 +956,8 @@ class GroundStationMonitorApp(tk.Tk):
         self._build_port_tab("port2")
 
     def _build_merge_tab(self) -> None:
-        self.merge_tab.columnconfigure(0, weight=2)
-        self.merge_tab.columnconfigure(1, weight=1)
+        self.merge_tab.columnconfigure(0, weight=1)
+        self.merge_tab.columnconfigure(1, weight=0, minsize=MERGE_SIDE_PANEL_WIDTH)
         self.merge_tab.rowconfigure(1, weight=1)
         self.merge_status_var = tk.StringVar(value="No merged packets")
         ttk.Label(self.merge_tab, textvariable=self.merge_status_var, font=("TkDefaultFont", 12, "bold")).grid(
@@ -994,8 +995,10 @@ class GroundStationMonitorApp(tk.Tk):
         link_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         self.alt_fig, self.alt_ax, self.alt_canvas = self._make_figure(alt_frame, "Altitude", "m")
         self.link_fig, self.link_ax, self.link_canvas = self._make_figure(link_frame, "RSSI/SNR", "dBm / dB")
-        side = ttk.Frame(self.merge_tab)
+        side = ttk.Frame(self.merge_tab, width=MERGE_SIDE_PANEL_WIDTH)
         side.grid(row=1, column=1, sticky="nsew")
+        side.grid_propagate(False)
+        self.merge_side_panel = side
         self.readout_var = tk.StringVar(value="Lat/Lon: --\nSats: --\nVoltage: --\nCurrent: --\nWatt: --\nRSSI: --")
         ttk.Label(side, textvariable=self.readout_var, justify="left").pack(anchor="w")
         event_frame = ttk.LabelFrame(side, text="Timeline Events")

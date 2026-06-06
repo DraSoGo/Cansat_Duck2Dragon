@@ -1003,6 +1003,11 @@ class GroundStationMonitorAppTests(unittest.TestCase):
 
         self.assertEqual(app.theme_name, "light")
         self.assertEqual(app.theme_button_var.get(), "Dark Mode")
+        self.assertEqual(int(app.merge_tab.columnconfigure(0)["weight"]), 1)
+        self.assertEqual(int(app.merge_tab.columnconfigure(1)["weight"]), 0)
+        self.assertEqual(int(app.merge_tab.columnconfigure(1)["minsize"]), self.monitor.MERGE_SIDE_PANEL_WIDTH)
+        self.assertEqual(int(app.merge_side_panel.cget("width")), self.monitor.MERGE_SIDE_PANEL_WIDTH)
+        self.assertFalse(app.merge_side_panel.grid_propagate())
 
         app._toggle_theme()
 
@@ -1010,6 +1015,9 @@ class GroundStationMonitorAppTests(unittest.TestCase):
         self.assertEqual(app.theme_name, "dark")
         self.assertEqual(app.theme_button_var.get(), "Light Mode")
         self.assertEqual(app.alt_fig.get_facecolor(), self.monitor.Figure(facecolor=dark_colors["chart_bg"]).get_facecolor())
+        self.assertEqual(int(app.merge_tab.columnconfigure(1)["weight"]), 0)
+        self.assertEqual(int(app.merge_tab.columnconfigure(1)["minsize"]), self.monitor.MERGE_SIDE_PANEL_WIDTH)
+        self.assertEqual(int(app.merge_side_panel.cget("width")), self.monitor.MERGE_SIDE_PANEL_WIDTH)
 
         app._toggle_theme()
 
