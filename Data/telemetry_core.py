@@ -45,11 +45,25 @@ LOG_DIR = DATA_DIR / "logs"
 
 @dataclass
 class AlertConfig:
-    """Alert configuration thresholds (placeholder - full impl in Task 10)."""
+    """Alert configuration thresholds for telemetry monitoring."""
     low_voltage_threshold: float = LOW_VOLTAGE_THRESHOLD
     weak_rssi_threshold: int = WEAK_RSSI_THRESHOLD
     stale_packet_seconds: float = STALE_PACKET_SECONDS
     malformed_burst_threshold: int = MALFORMED_BURST_THRESHOLD
+
+    def to_dict(self) -> dict:
+        """Serialize AlertConfig to dictionary."""
+        return {
+            'low_voltage_threshold': self.low_voltage_threshold,
+            'weak_rssi_threshold': self.weak_rssi_threshold,
+            'stale_packet_seconds': self.stale_packet_seconds,
+            'malformed_burst_threshold': self.malformed_burst_threshold,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'AlertConfig':
+        """Deserialize AlertConfig from dictionary, filtering unknown keys."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass(frozen=True)
