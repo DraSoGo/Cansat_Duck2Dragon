@@ -9,11 +9,10 @@
 // ----- Adjustable parameters (TUNE THESE) -----
 #define SERVO_PIN              9       // Servo PWM pin
 #define SERVO_LOCKED_ANGLE     35      // Pre-deploy / locked position
-#define SERVO_DEPLOY_ANGLE     110     // Released / deployed position
-#define SERVO_SWEEP_DELAY_MS   3       // Delay between degree steps during release sweep
+#define SERVO_DEPLOY_ANGLE     120     // Released / deployed position
 
-#define ARM_ALTITUDE_M         50    // Must reach this AGL altitude before apogee logic arms
-#define APOGEE_CONFIRM_COUNT   2       // Consecutive descending readings required
+#define ARM_ALTITUDE_M         100    // Must reach this AGL altitude before apogee logic arms
+#define APOGEE_CONFIRM_COUNT   3       // Consecutive descending readings required
 #define APOGEE_DEADBAND_M      0.5    // Ignore altitude changes smaller than this (noise filter)
 #define BASELINE_SAMPLES       20      // Samples averaged at startup for ground pressure
 
@@ -27,7 +26,6 @@ State state = IDLE;
 MS5611 ms5611(0x77);
 Servo  myservo;
 
-float time = 0.1; 
 float baselinePressure = 0;
 float prevAltitude     = 0;
 uint8_t confirmCount   = 0;
@@ -43,7 +41,7 @@ float readAltitude()
 void deployParachute()
 {
   Serial.println("APOGEE -> deploy");
-  myservo.write(120);
+  myservo.write(SERVO_DEPLOY_ANGLE);
   digitalWrite(LED_PIN, HIGH);
   state = DEPLOYED;
 }
@@ -129,11 +127,6 @@ void loop()
       }
       // Within deadband → keep confirmCount unchanged
       prevAltitude = alt;
-      if (time >= 10)
-      {
-        time += 0.1;
-        deployParachute();
-      }
       // Slow blink while armed
       if (millis() - lastBlink > 500)
       {
@@ -143,9 +136,9 @@ void loop()
       break;
 
     case DEPLOYED:
-      delay(1000000);
-      break;
       // One-shot: do nothing further
+      while(1) { delay(1000); }
+      break;
   }
 
   Serial.print("alt=");    Serial.print(alt, 2);
