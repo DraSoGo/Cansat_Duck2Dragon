@@ -47,9 +47,11 @@ CANSAT_Duck2Dragon/
 │   ├── sd_card.ino
 │   └── servo.ino
 ├── Data/
-│   ├── read_serial.py       PC-side logger (pyserial)
-│   ├── log.txt              Telemetry log output
-│   └── data_analysis.ipynb  (analysis notebook — not in scope)
+│   ├── read_serial.py            PC-side logger (pyserial)
+│   ├── log.txt                   Telemetry log output
+│   ├── data_analysis.ipynb       Post-flight telemetry analysis
+│   ├── landing_prediction.ipynb  Pre-flight landing prediction simulator
+│   └── ground_station_monitor.py Tkinter GUI for live monitoring
 ├── Document/
 │   └── Duck2Dragon.pdf      Project requirements
 ├── README.md
@@ -231,6 +233,96 @@ python3 ground_station_monitor.py
 ```
 
 The GUI is titled **Duck2Dragon Monitor**. It can read two serial ports at once, show `Merge Data`, `Port 1`, and `Port 2` tabs, save raw and merged logs under `Data/logs/`, show a draggable live GPS map when `tkintermapview` is installed, and replay an existing log without connected hardware.
+
+---
+
+## Landing Prediction Simulation
+
+The `Data/landing_prediction.ipynb` Jupyter notebook simulates rocket and CanSat landing locations for **pre-flight recovery planning** and **post-flight validation**.
+
+### Features
+
+- **RocketPy 6-DOF simulation** — full physics (thrust, drag, wind, atmosphere)
+- **OpenRocket .ork file integration** — parses motor thrust curve, mass, dimensions, drag coefficient
+- **Monte Carlo uncertainty analysis** — wind speed/direction, parachute deployment timing, drag coefficient, launch angle, atmospheric conditions
+- **Interactive visualizations** — 2D folium maps with CEP95 circles, 3D matplotlib trajectories, ipywidgets sliders for real-time updates
+- **Telemetry comparison** — overlay actual GPS trajectory from `log.txt` to validate predictions
+- **Export results** — CSV and JSON for GIS tools
+
+### Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+Key dependencies: `rocketpy`, `numpy`, `pandas`, `matplotlib`, `folium`, `ipywidgets`, `joblib`, `scipy`
+
+### Usage
+
+```bash
+jupyter notebook Data/landing_prediction.ipynb
+```
+
+Run all cells (`Kernel → Restart & Run All`). The notebook:
+
+1. Loads configuration (launch site coordinates, wind layers, rocket specs)
+2. Parses OpenRocket `.ork` file (falls back to default C6-5 motor if not found)
+3. Runs single demo flight
+4. Executes Monte Carlo simulation (default 500 samples, ~30 seconds on 8-core CPU)
+5. Computes CEP95 statistics (95% landing zone radius)
+6. Displays 2D map with launch site, mean landing, scatter plot, and CEP95 circle
+7. Shows 3D trajectory visualization
+8. Provides interactive dashboard (sliders: wind speed/direction, MC samples)
+9. Compares predictions with actual telemetry from `Data/log.txt` (if available)
+10. Exports results to timestamped CSV and JSON files
+
+### Configuration
+
+Edit the `config` dictionary in cell 2:
+
+```python
+config = {
+    'launch_site': {'lat': 13.7563, 'lon': 100.5018, 'elevation': 10},  # Bangkok example
+    'wind_layers': [
+        {'altitude': 0, 'speed': 3, 'direction': 45},     # m AGL, m/s, degrees from North
+        {'altitude': 100, 'speed': 5, 'direction': 50},
+        {'altitude': 500, 'speed': 8, 'direction': 60},
+    ],
+    'ork_file': 'rocket_design.ork',          # Path to OpenRocket file
+    'rocket_parachute_diameter': 1.0,         # meters
+    'cansat_mass': 0.300,                     # kg
+    'cansat_parachute_diameter': 0.5,         # meters
+    'monte_carlo_samples': 500,               # 100=fast, 500=default, 1000+=production
+}
+```
+
+### Physics Models
+
+The simulation uses validated physics equations:
+
+- **Thrust:** integrated from motor burn profile
+- **Drag:** $D = \frac{1}{2}\rho v^2 C_d A$ with ISA atmospheric density
+- **Wind profile:** logarithmic $V_{wind}(z) = \frac{u_*}{\kappa}\ln\frac{z}{z_0}$ (roughness length based on terrain)
+- **Parachute terminal velocity:** $v_{term} = \sqrt{\frac{2mg}{\rho C_d A}}$ with $C_d = 1.5$ for hemispherical chute
+- **ISA atmosphere:** pressure, temperature, density variation with altitude
+
+### Outputs
+
+- **CEP95 metric:** 95% of landings fall within this radius from mean landing point (key for recovery planning)
+- **Landing scatter plot:** visual uncertainty envelope
+- **CSV export:** `landing_prediction_results_YYYYMMDD_HHMMSS.csv` — latitude, longitude, apogee, flight time per Monte Carlo run
+- **JSON export:** full statistics, metadata, and landing coordinates for GIS import
+
+### Validation
+
+Compare predictions against actual flight data:
+
+1. Fly the rocket and log telemetry to `Data/log.txt`
+2. Re-run notebook — telemetry comparison cell loads GPS trajectory
+3. Check prediction error and whether actual landing falls within CEP95 circle
+4. Adjust wind input or uncertainty parameters based on observed discrepancies
+
+Typical CEP95 values: 50-200 m depending on wind speed, altitude, and parachute size.
 
 ---
 
