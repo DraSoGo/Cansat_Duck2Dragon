@@ -8,10 +8,13 @@
 // Telem:    LoRa SX1276 @ 922.525 MHz (Thailand 920-925 ISM band)
 // NOTE:     Arduino IDE -> Tools -> Partition Scheme -> "Default 4MB with spiffs"
 //
-// CSV (24 fields):
-// millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,
+// CSV (24 fields, logged to flash):
+// lat,lon,alt_gps,sats,millis,alt_baro,temp,pressure,
 // ax,ay,az,gx,gy,gz,qw,qx,qy,qz,
 // high_ax,high_ay,high_az,voltage,current,watt
+//
+// LoRa packet = DTI prefix + full CSV:
+// team,accel_total,watt,voltage,ampere,<24-field CSV above>
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -47,6 +50,8 @@
 #define BAND       922250000
 #define LORA_BW    125E3
 #define LORA_SF    8
+
+#define TEAM_NUMBER 13   // LoRa packet prefix
 
 // ---------------- Storage config ----------------
 #define LOG_PATH        "/cansat.csv"
@@ -212,7 +217,7 @@ void setup()
       fsInfo += "%)";
 
       logFile.println(fsInfo);
-      logFile.println("# millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt");
+      logFile.println("# lat,lon,alt_gps,sats,millis,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt");
       logFile.flush();
 
       // Transmit boot status via LoRa
@@ -281,10 +286,7 @@ String buildCsvLine()
   String line;
   line.reserve(220);
 
-  // 0: millis
-  appendInt(line, millis());
-
-  // 1-4: GPS lat, lon, alt, sats
+  // 0-3: GPS lat, lon, alt, sats
   if (gps.location.isValid())
   {
     appendFloat(line, gps.location.lat(), 6);
@@ -296,6 +298,9 @@ String buildCsvLine()
   }
   appendFloat(line, gps.altitude.isValid()   ? gps.altitude.meters() : 0.0, 2);
   appendInt  (line, gps.satellites.isValid() ? gps.satellites.value() : 0);
+
+  // 4: millis
+  appendInt(line, millis());
 
   // 5-7: MS5611 alt, temp, pressure
   if (okMS && ms5611.read() == MS5611_READ_OK)
@@ -358,6 +363,31 @@ String buildCsvLine()
   return line;
 }
 
+// Build LoRa packet: TEAM, accel_total, watt, voltage, ampere, then full CSV.
+// accel_total = sqrt(ax^2+ay^2+az^2) from BNO085 linear acceleration.
+String buildLoraLine(const String& csv)
+{
+  float bus = 0, cur = 0;
+  if (okINA)
+  {
+    bus = ina219.getBusVoltage_V();
+    cur = ina219.getCurrent_mA();
+  }
+  float ampere = cur / 1000.0;
+  float watt   = bus * ampere;
+  float accelTotal = sqrt(bnoAx * bnoAx + bnoAy * bnoAy + bnoAz * bnoAz);
+
+  String pkt;
+  pkt.reserve(260);
+  pkt += TEAM_NUMBER;                  pkt += ',';
+  pkt += String(accelTotal, 3);        pkt += ',';
+  pkt += String(watt, 3);              pkt += ',';
+  pkt += String(bus, 3);               pkt += ',';
+  pkt += String(ampere, 3);            pkt += ',';
+  pkt += csv;   // full CSV appended after the DTI fields
+  return pkt;
+}
+
 // ---------------- Loop ----------------
 void loop()
 {
@@ -371,12 +401,12 @@ void loop()
 
   String csv = buildCsvLine();
 
-  // Transmit via LoRa
+  // Transmit via LoRa: TEAM,accel_total,watt,voltage,ampere,<full CSV>
   LoRa.beginPacket();
-  LoRa.print(csv);
+  LoRa.print(buildLoraLine(csv));
   LoRa.endPacket();
 
-  // Log to LittleFS with auto-trim
+  // Log plain CSV (24 fields) to LittleFS with auto-trim
   if (okFS && logFile)
   {
     checkAndTrim();   // rotate if ≥90% full

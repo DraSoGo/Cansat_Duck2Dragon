@@ -27,12 +27,17 @@ except Exception:
 
 
 CSV_HEADER = (
-    "millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,"
+    "lat,lon,alt_gps,sats,millis,alt_baro,temp,pressure,"
     "ax,ay,az,gx,gy,gz,qw,qx,qy,qz,"
     "high_ax,high_ay,high_az,voltage,current,watt"
 )
 CSV_FIELDS = CSV_HEADER.split(",")
 CSV_FIELD_COUNT = len(CSV_FIELDS)
+# LoRa packets carry a DTI prefix ahead of the CSV body:
+#   team,accel_total,watt,voltage,ampere,<CSV...>
+# Stored logs keep only the CSV body, so the prefix is stripped on receive.
+LORA_PREFIX_FIELDS = ["team", "accel_total", "dti_watt", "dti_voltage", "dti_ampere"]
+LORA_PREFIX_FIELD_COUNT = len(LORA_PREFIX_FIELDS)
 LOG_TIME_FIELD = "time"
 RAW_LOG_HEADER = f"{LOG_TIME_FIELD},raw_line"
 MERGED_LOG_HEADER = f"{LOG_TIME_FIELD},{CSV_HEADER},source,rssi,snr"
@@ -165,11 +170,11 @@ class TelemetryPacket:
 
     def csv_values(self) -> list[str]:
         return [
-            str(self.millis),
             f"{self.lat:.6f}",
             f"{self.lon:.6f}",
             f"{self.alt_gps:.2f}",
             str(self.sats),
+            str(self.millis),
             f"{self.alt_baro:.2f}",
             f"{self.temp:.2f}",
             f"{self.pressure:.2f}",
@@ -284,16 +289,16 @@ class TelemetryParser:
         arrival_time: Optional[float] = None,
     ) -> TelemetryPacket:
         parts = TelemetryParser._normalise_fields(line)
-        millis = TelemetryParser._parse_millis(parts[0])
+        millis = TelemetryParser._parse_millis(parts[4])
         voltage = TelemetryParser._float_or_nan(parts[21])
         current = TelemetryParser._float_or_nan(parts[22])
         watt = TelemetryParser._parse_watt(parts[23], voltage, current)
         values = {
+            "lat": TelemetryParser._float_or_nan(parts[0]),
+            "lon": TelemetryParser._float_or_nan(parts[1]),
+            "alt_gps": TelemetryParser._float_or_nan(parts[2]),
+            "sats": TelemetryParser._int_or_nan(parts[3]),
             "millis": millis,
-            "lat": TelemetryParser._float_or_nan(parts[1]),
-            "lon": TelemetryParser._float_or_nan(parts[2]),
-            "alt_gps": TelemetryParser._float_or_nan(parts[3]),
-            "sats": TelemetryParser._int_or_nan(parts[4]),
             "alt_baro": TelemetryParser._float_or_nan(parts[5]),
             "temp": TelemetryParser._float_or_nan(parts[6]),
             "pressure": TelemetryParser._float_or_nan(parts[7]),
@@ -330,6 +335,11 @@ class TelemetryParser:
         if not data_part:
             raise ValueError("empty telemetry row")
         parts = [part.strip() for part in data_part.split(",")]
+        # Live LoRa packets prepend a DTI prefix (team,accel_total,watt,
+        # voltage,ampere) ahead of the CSV body. Strip it so downstream
+        # indexing matches CSV_FIELDS. Replayed log rows have no prefix.
+        if len(parts) >= LORA_PREFIX_FIELD_COUNT + CSV_FIELD_COUNT:
+            parts = parts[LORA_PREFIX_FIELD_COUNT:]
         if len(parts) < CSV_FIELD_COUNT:
             parts.extend([""] * (CSV_FIELD_COUNT - len(parts)))
         return parts[:CSV_FIELD_COUNT]

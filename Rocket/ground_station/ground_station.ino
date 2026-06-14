@@ -14,7 +14,7 @@
 
 #define BAND       922250000
 #define LORA_BW    125E3
-#define LORA_SF    11
+#define LORA_SF    8
 
 void setup()
 {

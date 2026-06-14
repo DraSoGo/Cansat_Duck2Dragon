@@ -11,7 +11,7 @@
 #include <Adafruit_INA219.h>
 
 // ---------------- Config ----------------
-#define TEAM_NUMBER     99    // Change to your team number
+#define TEAM_NUMBER     13    // Change to your team number
 
 // Pin map
 #define LORA_SCK   5
@@ -139,10 +139,12 @@ String buildDtiPacket()
     pkt += String(gps.location.lat(), 6);
     pkt += ',';
     pkt += String(gps.location.lng(), 6);
+    pkt += ',';
+    pkt += String(gps.satellites.value());
   }
   else
   {
-    pkt += "0.000000,0.000000";
+    pkt += "0.000000,0.000000,0";
   }
 
   return pkt;

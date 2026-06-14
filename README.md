@@ -1,361 +1,410 @@
 # CANSAT Duck2Dragon
 
-Model rocket CanSat project — telemetry, deployment, and ground-link codebase.
+<p align="center">
+  <strong>Duck2Dragon CanSat flight computer, LoRa ground station, telemetry monitor, and data analysis workspace.</strong>
+</p>
 
-The CanSat ascends inside a model rocket to ~419 m apogee, is ejected via a piston-eject system, then descends under its own parachute while logging sensor data to SD and broadcasting it live over LoRa to a ground station.
+<p align="center">
+  <img src="assets/Rocket_lanch.gif" alt="Duck2Dragon rocket render" width="300">
+</p>
 
----
+## **Team**
 
-## System architecture
+<p align="center">
+  <img src="assets/Team.png" alt="Duck2Dragon rocket render" width="900">
+</p>
 
-```
-   [ Rocket airframe ]                 [ Ground ]
-          |
-   ┌──────┴───────┐
-   |              |
-   | CanSat (TTGO ESP32)             Ground Station (TTGO ESP32)
-   |   - Sensors                          - LoRa RX
-   |   - LoRa TX  ────────── 922.525 MHz ──────────►  Serial USB
-   |   - SD log                                          │
-   |                                                     ▼
-   | Deployment (Arduino Nano)               PC: read_serial.py
-   |   - MS5611 apogee detection                         │
-   |   - Servo parachute release                         ▼
-   |                                                Data/log.txt
-```
+1. Chawanakorn Thipjumnong (Electronic)
+2. Phattharaphon nualsan (Chemist)
+3. Nawapon Kongtantham (Mechanic)
+4. Guntinun Sawatwong (Programer)
+5. Kanisorn Youynaul (Safety)
 
----
+## **Trophy**
 
-## Repository layout
+<p align="center">
+  <img src="assets/Reward.png" alt="Duck2Dragon rocket render" width="200">
+</p>
 
-```
+<p align="center">
+  <strong>CANSAT Mission Award</strong>
+</p>
+
+## **Overview**
+
+<p align="center">
+  <img src="assets/Rocket.png" alt="Duck2Dragon rocket render" width="900">
+</p>
+
+<p align="center">
+  <img src="assets/Ground_station_monitor.png" alt="Duck2Dragon rocket render" width="900">
+</p>
+
+Duck2Dragon is a CanSat and model rocket project. The CanSat rides inside the rocket, records flight data, transmits live telemetry over LoRa, and supports post-flight analysis through Python notebooks and a Tkinter ground station monitor.
+
+The current codebase includes:
+
+- ESP32 CanSat firmware with GPS, BNO08x IMU, ADXL375 high-G acceleration, MS5611 barometer, INA219 power sensing, LoRa telemetry, and LittleFS logging.
+- ESP32 LoRa ground station firmware that forwards received telemetry to USB serial.
+- Arduino Nano deployment firmware for barometric apogee detection and servo parachute release.
+- A Python/Tkinter monitor for two LoRa serial receivers, merged telemetry, replay, live map, charts, logging, and orientation display.
+- Jupyter notebooks for telemetry analysis, landing prediction, and gyro/IMU log analysis.
+- Test media, reports, presentations, and design/spec documents.
+
+
+## Repository Layout
+
+```text
 CANSAT_Duck2Dragon/
-├── Rocket/
-│   ├── cansat.ino           Main flight computer (TTGO ESP32)
-│   ├── deployment.ino       Apogee detection + servo release (Arduino Nano)
-│   ├── ground_station.ino   LoRa receiver -> USB serial bridge (TTGO ESP32)
-│   └── gyro.ino             (autogyro module — not implemented)
-├── Module_Test/             Standalone calibration sketches per component
-│   ├── adxl375.ino
-│   ├── bno055.ino
-│   ├── ds3231.ino
-│   ├── gps.ino
-│   ├── hc-020k.ino
-│   ├── ina219.ino
-│   ├── lora.ino
-│   ├── ms5611.ino
-│   ├── sd_card.ino
-│   └── servo.ino
-├── Data/
-│   ├── read_serial.py            PC-side logger (pyserial)
-│   ├── log.txt                   Telemetry log output
-│   ├── data_analysis.ipynb       Post-flight telemetry analysis
-│   ├── landing_prediction.ipynb  Pre-flight landing prediction simulator
-│   └── ground_station_monitor.py Tkinter GUI for live monitoring
-├── Document/
-│   └── Duck2Dragon.pdf      Project requirements
-├── README.md
-└── LICENSE
+├── assets/                  Project images used by this README and GUI
+│   ├── D2D_logo.png
+│   ├── Rocket.png
+│   └── Reward.png
+├── Data/                    Python monitor, notebooks, logs, CSV data
+│   ├── ground_station_monitor.py
+│   ├── requirements.txt
+│   ├── data_analysis.ipynb
+│   ├── landing_prediction.ipynb
+│   ├── gyro_analysis.ipynb
+│   ├── logs/
+│   └── *.csv / *.txt telemetry captures
+├── Document/                Project document PDF
+├── Module_Test/             Standalone Arduino sketches for sensor bring-up
+├── Present/                 Pre/post project presentation PDFs
+├── Rocket/                  Flight, deployment, and ground station firmware
+│   ├── cansat/cansat.ino
+│   ├── ground_station/ground_station.ino
+│   ├── deployment/deployment.ino
+│   ├── gyro/gyro.ino
+│   └── cansat_DTI/cansat_DTI.ino
+├── Test/                    Test videos and thermal images
+├── docs/superpowers/        Design specs and implementation plans
+├── libraries/               Arduino libraries vendored with the project
+├── LICENSE
+└── README.md
 ```
 
----
+## Hardware Overview
 
-## Hardware
+### CanSat Flight Computer
 
-### CanSat board — TTGO SX1276 LoRa32 (ESP32, 920 MHz region)
+Target: TTGO SX1276 LoRa32 / ESP32.
 
-| Component                | Interface | Notes                            |
-| ------------------------ | --------- | -------------------------------- |
-| FPC flexible antenna     | RF        | 920 MHz, +5 dBi                  |
-| LoRa SX1276 (built-in)   | SPI/VSPI  | 922.525 MHz, BW=125 kHz, SF=9    |
-| GPS NEO-6M               | UART1     | 9600 baud                        |
-| BNO055 (9-DOF IMU)       | I2C 0x28  | Quaternion + accel + gyro fusion |
-| ADXL375 (high-G accel)   | I2C 0x53  | ±200 g                           |
-| MS5611 (barometer)       | I2C 0x77  | Altitude / temperature           |
-| INA219 (power monitor)   | I2C 0x40  | Battery V / current              |
-| microSD card             | SPI/HSPI  | Telemetry log                    |
+| Component | Interface | Current use |
+| --- | --- | --- |
+| SX1276 LoRa | SPI / VSPI | Sends DTI prefix plus full telemetry CSV |
+| NEO-6M / compatible GPS | UART1 | Latitude, longitude, GPS altitude, satellites |
+| BNO08x | I2C `0x4A` | Linear acceleration, calibrated gyro, quaternion orientation |
+| ADXL375 | I2C `0x54` | High-G acceleration in g |
+| MS5611 | I2C `0x77` | Barometric altitude, temperature, pressure |
+| INA219 | I2C `0x40` | Bus voltage, current, power |
+| LittleFS | ESP32 flash | Local telemetry log at `/cansat.csv` |
 
-### Deployment board — Arduino Nano
+Current firmware: `Rocket/cansat/cansat.ino`.
 
-| Component | Interface | Notes                                  |
-| --------- | --------- | -------------------------------------- |
-| MS5611    | I2C       | Barometric apogee detection            |
-| Servo     | PWM (D9)  | Parachute release piston eject         |
+### Ground Station Receiver
 
-### Ground Station — TTGO SX1276 LoRa32 (ESP32)
+Target: TTGO SX1276 LoRa32 / ESP32.
 
-| Component | Notes                                  |
-| --------- | -------------------------------------- |
-| LoRa      | RX only, prints CSV to USB Serial      |
+`Rocket/ground_station/ground_station.ino` receives LoRa packets and prints the raw telemetry line to USB serial at `115200` baud. After each packet it also prints a comment line with RSSI and SNR.
 
----
+### Deployment Subsystem
 
-## Pin assignments
+Target: Arduino Nano.
 
-### CanSat (ESP32)
+`Rocket/deployment/deployment.ino` uses an MS5611 barometer to arm after a configured altitude and deploy a servo after confirmed descent near apogee.
 
-| Function     | GPIO              |
-| ------------ | ----------------- |
-| LoRa SCK     | 5                 |
-| LoRa MISO    | 19                |
-| LoRa MOSI    | 27                |
-| LoRa CS      | 18                |
-| LoRa RST     | 14                |
-| LoRa DIO0    | 26                |
-| I2C SDA      | 21                |
-| I2C SCL      | 22                |
-| GPS RX       | 16                |
-| GPS TX       | 17                |
-| SD CS        | 13 (HSPI)         |
-| SD MOSI      | 15 (HSPI)         |
-| SD MISO      | 2  (HSPI)         |
-| SD CLK       | 4  (HSPI)         |
+Key constants to tune:
 
-LoRa runs on the default VSPI bus; the SD card runs on a separate `SPIClass(HSPI)` instance to prevent bus contention during transmit.
+- `SERVO_LOCKED_ANGLE`
+- `SERVO_DEPLOY_ANGLE`
+- `ARM_ALTITUDE_M`
+- `APOGEE_CONFIRM_COUNT`
+- `APOGEE_DEADBAND_M`
 
-### Deployment (Arduino Nano)
+## Pin Summary
 
-| Function     | Pin          |
-| ------------ | ------------ |
-| Servo PWM    | D9           |
-| I2C SDA      | A4           |
-| I2C SCL      | A5           |
-| Status LED   | D13          |
+### CanSat ESP32
 
-### Ground Station (ESP32)
+| Function | GPIO |
+| --- | --- |
+| LoRa SCK | 5 |
+| LoRa MISO | 19 |
+| LoRa MOSI | 27 |
+| LoRa SS | 18 |
+| LoRa RST | 14 |
+| LoRa DIO0 | 26 |
+| I2C SDA | 21 |
+| I2C SCL | 22 |
+| GPS RX | 3 |
+| GPS TX | 1 |
 
-Same LoRa pins as CanSat, except `LORA_RST = GPIO 23`.
+### Ground Station ESP32
 
----
+| Function | GPIO |
+| --- | --- |
+| LoRa SCK | 5 |
+| LoRa MISO | 19 |
+| LoRa MOSI | 27 |
+| LoRa SS | 18 |
+| LoRa RST | 23 |
+| LoRa DIO0 | 26 |
 
-## Telemetry CSV format
+### Deployment Arduino Nano
 
-Each LoRa packet and SD log line is one comma-separated record terminated with `\n`. All packets share the same fixed 24-field schema.
+| Function | Pin |
+| --- | --- |
+| Servo PWM | D9 |
+| I2C SDA | A4 |
+| I2C SCL | A5 |
+| Status LED | D13 |
 
+## LoRa Settings
+
+The active CanSat and ground station firmware use:
+
+| Setting | Value |
+| --- | --- |
+| Frequency | `922250000` Hz |
+| Bandwidth | `125E3` |
+| Spreading factor | `8` |
+| Serial baud | `115200` |
+
+Keep the CanSat and ground station settings identical before flight.
+
+## Telemetry Format
+
+The active CanSat firmware builds a 24-field CSV body and logs that body to LittleFS:
+
+```text
+lat,lon,alt_gps,sats,millis,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt
 ```
-millis,lat,lon,alt_gps,sats,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt
+
+LoRa packets add a 5-field DTI prefix before the CSV body:
+
+```text
+team,accel_total,watt,voltage,ampere,<24-field CSV body>
 ```
 
-| Idx | Field      | Unit  | Source        |
-| --- | ---------- | ----- | ------------- |
-| 0   | millis     | ms    | `millis()`    |
-| 1   | lat        | deg   | GPS NEO-6M    |
-| 2   | lon        | deg   | GPS NEO-6M    |
-| 3   | alt_gps    | m     | GPS NEO-6M    |
-| 4   | sats       | count | GPS NEO-6M    |
-| 5   | alt_baro   | m     | MS5611        |
-| 6   | temp       | C     | MS5611        |
-| 7   | pressure   | hPa   | MS5611        |
-| 8   | ax         | m/s²  | BNO055        |
-| 9   | ay         | m/s²  | BNO055        |
-| 10  | az         | m/s²  | BNO055        |
-| 11  | gx         | deg/s | BNO055        |
-| 12  | gy         | deg/s | BNO055        |
-| 13  | gz         | deg/s | BNO055        |
-| 14  | qw         | -     | BNO055 quat   |
-| 15  | qx         | -     | BNO055 quat   |
-| 16  | qy         | -     | BNO055 quat   |
-| 17  | qz         | -     | BNO055 quat   |
-| 18  | high_ax    | g     | ADXL375       |
-| 19  | high_ay    | g     | ADXL375       |
-| 20  | high_az    | g     | ADXL375       |
-| 21  | voltage    | V     | INA219 bus V  |
-| 22  | current    | mA    | INA219        |
-| 23  | watt       | W     | INA219        |
+The Python monitor strips the prefix when present and stores merged logs with this header:
 
-Lines starting with `#` are metadata (boot markers, RSSI/SNR, session timestamps) and may be discarded by analysis tools.
+```text
+time,lat,lon,alt_gps,sats,millis,alt_baro,temp,pressure,ax,ay,az,gx,gy,gz,qw,qx,qy,qz,high_ax,high_ay,high_az,voltage,current,watt,source,rssi,snr
+```
 
----
+| Field | Unit | Source |
+| --- | --- | --- |
+| `lat`, `lon` | degrees | GPS |
+| `alt_gps` | m | GPS |
+| `sats` | count | GPS |
+| `millis` | ms | ESP32 runtime |
+| `alt_baro` | m | MS5611 |
+| `temp` | C | MS5611 |
+| `pressure` | hPa | MS5611, with firmware compensation |
+| `ax`, `ay`, `az` | m/s^2 | BNO08x linear acceleration |
+| `gx`, `gy`, `gz` | rad/s from BNO08x report | BNO08x calibrated gyro |
+| `qw`, `qx`, `qy`, `qz` | unit quaternion | BNO08x rotation vector |
+| `high_ax`, `high_ay`, `high_az` | g | ADXL375 |
+| `voltage` | V | INA219 |
+| `current` | mA | INA219 |
+| `watt` | W | Calculated from INA219 |
 
-## Required Arduino libraries
+Lines beginning with `#` are metadata or receiver status lines. Analysis tools should keep them for debugging or skip them when loading numeric rows.
 
-Install via the Arduino IDE Library Manager:
+## Arduino Setup
 
-| Library                  | Author          | Used by                           |
-| ------------------------ | --------------- | --------------------------------- |
-| LoRa                     | Sandeep Mistry  | cansat, ground_station, lora test |
-| TinyGPSPlus              | mikalhart       | cansat, gps test                  |
-| Adafruit BNO055          | Adafruit        | cansat, bno055 test               |
-| Adafruit Unified Sensor  | Adafruit        | (BNO055 / ADXL375 dependency)     |
-| Adafruit ADXL375         | Adafruit        | cansat, adxl375 test              |
-| Adafruit INA219          | Adafruit        | cansat, ina219 test               |
-| MS5611                   | Rob Tillaart    | cansat, deployment, ms5611 test   |
-| RTClib                   | Adafruit        | ds3231 test                       |
+Install ESP32 board support in Arduino IDE, then install or use the libraries in `libraries/`.
 
-ESP32 board support: install **esp32 by Espressif** (Boards Manager). Select board "TTGO LoRa32-OLED V1" or compatible SX1276 variant.
+Main libraries used by the current sketches:
 
-For the Arduino Nano deployment board, the standard `Wire.h` and `Servo.h` libraries are bundled with the IDE.
+| Library | Used by |
+| --- | --- |
+| LoRa | CanSat and ground station LoRa |
+| TinyGPSPlus | GPS parsing |
+| Adafruit BNO08x | IMU orientation, acceleration, gyro |
+| Adafruit ADXL375 | High-G accelerometer |
+| Adafruit INA219 | Power telemetry |
+| MS5611 | Barometer |
+| ESP32 LittleFS support | CanSat local logging |
+| Servo | Arduino Nano deployment |
 
----
+For `Rocket/cansat/cansat.ino`, use an ESP32 partition scheme with LittleFS/SPIFFS space, such as `Default 4MB with spiffs`.
 
-## Build & upload
+## Upload Firmware
 
-### CanSat (TTGO ESP32)
-1. Install required libraries (see table above).
-2. Open `Rocket/cansat.ino` in the Arduino IDE.
-3. **Tools → Board** → "TTGO LoRa32-OLED V1" (or your SX1276 board).
-4. **Tools → Port** → select the USB port for the TTGO board.
-5. Click **Upload**.
-6. Open Serial Monitor at **115200 baud** to verify all sensors report `OK`.
+### CanSat
 
-### Deployment (Arduino Nano)
-1. Open `Rocket/deployment.ino`.
-2. **Tools → Board** → "Arduino Nano" (Processor: ATmega328P).
-3. Select port, click **Upload**.
-4. Serial Monitor at **9600 baud** to watch state machine.
-5. Tune `SERVO_LOCKED_ANGLE` and `SERVO_DEPLOY_ANGLE` `#defines` to match the piston-eject mechanical assembly.
+1. Open `Rocket/cansat/cansat.ino`.
+2. Select the TTGO LoRa32 / compatible ESP32 board.
+3. Select a partition scheme with SPIFFS/LittleFS space.
+4. Upload.
+5. Confirm sensor wiring before flight. The firmware retries failed sensors during runtime.
 
-### Ground Station (second TTGO ESP32)
-1. Open `Rocket/ground_station.ino`.
-2. Same board settings as CanSat.
-3. Upload, confirm `# Ground Station ready` at 115200 baud.
+### Ground Station
 
----
+1. Open `Rocket/ground_station/ground_station.ino`.
+2. Select the TTGO LoRa32 / compatible ESP32 board.
+3. Upload.
+4. Open Serial Monitor at `115200`.
+5. Confirm it prints `# Ground Station ready`.
 
-## Running the data logger
+### Deployment
+
+1. Open `Rocket/deployment/deployment.ino`.
+2. Select Arduino Nano / ATmega328P.
+3. Upload.
+4. Open Serial Monitor at `9600`.
+5. Verify the servo lock/deploy angles on the real mechanism before installing it in the rocket.
+
+## Python Environment
+
+Create and install the analysis/monitor dependencies:
 
 ```bash
-cd Data
-python3 -m pip install pyserial
-python3 read_serial.py                       # default /dev/ttyACM0 @ 115200
-python3 read_serial.py /dev/ttyUSB0          # custom port
-python3 read_serial.py /dev/ttyUSB0 9600     # custom port + baud
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r Data/requirements.txt
+python3 -m pip install tkintermapview
 ```
 
-All received lines are appended to `Data/log.txt`. Press `Ctrl+C` to stop.
-
-### Running the Tkinter ground station monitor
+`tkinter` is usually provided by the system package manager, not pip. On Debian/Ubuntu:
 
 ```bash
-cd Data
-python3 -m pip install pyserial matplotlib tkintermapview
-python3 ground_station_monitor.py
+sudo apt install python3-tk
 ```
 
-The GUI is titled **Duck2Dragon Monitor**. It can read two serial ports at once, show `Merge Data`, `Port 1`, and `Port 2` tabs, save raw and merged logs under `Data/logs/`, show a draggable live GPS map when `tkintermapview` is installed, and replay an existing log without connected hardware.
+## Ground Station Monitor
 
----
-
-## Landing Prediction Simulation
-
-The `Data/landing_prediction.ipynb` Jupyter notebook simulates rocket and CanSat landing locations for **pre-flight recovery planning** and **post-flight validation**.
-
-### Features
-
-- **RocketPy 6-DOF simulation** — full physics (thrust, drag, wind, atmosphere)
-- **OpenRocket .ork file integration** — parses motor thrust curve, mass, dimensions, drag coefficient
-- **Monte Carlo uncertainty analysis** — wind speed/direction, parachute deployment timing, drag coefficient, launch angle, atmospheric conditions
-- **Interactive visualizations** — 2D folium maps with CEP95 circles, 3D matplotlib trajectories, ipywidgets sliders for real-time updates
-- **Telemetry comparison** — overlay actual GPS trajectory from `log.txt` to validate predictions
-- **Export results** — CSV and JSON for GIS tools
-
-### Installation
+Run the GUI:
 
 ```bash
-pip install -r requirements.txt
+python3 Data/ground_station_monitor.py
 ```
 
-Key dependencies: `rocketpy`, `numpy`, `pandas`, `matplotlib`, `folium`, `ipywidgets`, `joblib`, `scipy`
+The monitor is titled **Duck2Dragon Monitor** and uses `assets/D2D_logo.png` as the application icon.
 
-### Usage
+Main features:
+
+- Reads two serial receivers at the same time.
+- Merges packets from `Port 1` and `Port 2`.
+- Keeps the strongest duplicate packet by RSSI where applicable.
+- Saves raw, merged, and event logs under `Data/logs/`.
+- Replays existing `.txt` or `.csv` telemetry logs.
+- Shows tabs for merged data, port 1, and port 2.
+- Displays altitude, RSSI/SNR, sensor charts, and GPS data.
+- Uses `tkintermapview` for a draggable OpenStreetMap GPS view when installed.
+- Falls back to Matplotlib GPS plotting when the interactive map dependency is unavailable.
+- Shows a 3D CanSat orientation overlay from BNO quaternion data.
+- Supports light/dark theme switching.
+
+Useful helper:
 
 ```bash
+python3 Data/scan_ports.py
+```
+
+## Serial Loggers
+
+Legacy command-line serial loggers are also available:
+
+```bash
+python3 Data/read_serial_1.py /dev/ttyACM0 115200
+python3 Data/read_serial_2.py /dev/ttyUSB0 115200
+```
+
+They append to:
+
+- `Data/log_1.txt`
+- `Data/log_2.txt`
+
+Prefer `Data/ground_station_monitor.py` for current dual-LoRa operation because it understands prefix stripping, merged logs, replay, charts, and map display.
+
+## Data and Notebooks
+
+Important analysis files:
+
+| File | Purpose |
+| --- | --- |
+| `Data/data_analysis.ipynb` | General post-flight telemetry analysis |
+| `Data/landing_prediction.ipynb` | Landing prediction and recovery-zone simulation |
+| `Data/gyro_analysis.ipynb` | Analysis for `Data/gyro_log.csv` |
+| `Data/Prediction.pdf` | Research/reference material for prediction work |
+| `Data/rocket_design.ork` | OpenRocket design file |
+
+Run notebooks from the repository root:
+
+```bash
+jupyter notebook Data/data_analysis.ipynb
 jupyter notebook Data/landing_prediction.ipynb
+jupyter notebook Data/gyro_analysis.ipynb
 ```
 
-Run all cells (`Kernel → Restart & Run All`). The notebook:
+Example logs and processed outputs are stored in `Data/` and `Data/logs/`. Some files are real captured data and some are test/replay inputs, so check the header and field order before using a file for final analysis.
 
-1. Loads configuration (launch site coordinates, wind layers, rocket specs)
-2. Parses OpenRocket `.ork` file (falls back to default C6-5 motor if not found)
-3. Runs single demo flight
-4. Executes Monte Carlo simulation (default 500 samples, ~30 seconds on 8-core CPU)
-5. Computes CEP95 statistics (95% landing zone radius)
-6. Displays 2D map with launch site, mean landing, scatter plot, and CEP95 circle
-7. Shows 3D trajectory visualization
-8. Provides interactive dashboard (sliders: wind speed/direction, MC samples)
-9. Compares predictions with actual telemetry from `Data/log.txt` (if available)
-10. Exports results to timestamped CSV and JSON files
+## Module Tests
 
-### Configuration
+`Module_Test/` contains standalone sketches for individual parts:
 
-Edit the `config` dictionary in cell 2:
+| Sketch | Purpose |
+| --- | --- |
+| `adxl375/adxl375.ino` | High-G accelerometer test |
+| `bno055/bno055.ino` | BNO055 test sketch |
+| `gps/gps.ino` | GPS readout |
+| `ina219/ina219.ino` | Voltage/current sensor |
+| `lora/lora.ino` | LoRa send/receive test |
+| `ms5611/ms5611.ino` | Barometer test |
+| `ms5611_diag/ms5611_diag.ino` | Barometer diagnostics |
+| `sd_card/sd_card.ino` | SD card test |
+| `servo/servo.ino` | Servo movement test |
+| `i2c_scanner/i2c_scanner.ino` | I2C address scan |
+| `camera/camera.ino` | Camera module test |
+| `sent_data/sent_data.ino` | Transmit test |
+| `recive_data/recive_data.ino` | Receive test |
 
-```python
-config = {
-    'launch_site': {'lat': 13.7563, 'lon': 100.5018, 'elevation': 10},  # Bangkok example
-    'wind_layers': [
-        {'altitude': 0, 'speed': 3, 'direction': 45},     # m AGL, m/s, degrees from North
-        {'altitude': 100, 'speed': 5, 'direction': 50},
-        {'altitude': 500, 'speed': 8, 'direction': 60},
-    ],
-    'ork_file': 'rocket_design.ork',          # Path to OpenRocket file
-    'rocket_parachute_diameter': 1.0,         # meters
-    'cansat_mass': 0.300,                     # kg
-    'cansat_parachute_diameter': 0.5,         # meters
-    'monte_carlo_samples': 500,               # 100=fast, 500=default, 1000+=production
-}
-```
+Use these before full-system integration when a sensor or link behaves unexpectedly.
 
-### Physics Models
+## Documents, Presentations, and Test Media
 
-The simulation uses validated physics equations:
+Project references:
 
-- **Thrust:** integrated from motor burn profile
-- **Drag:** $D = \frac{1}{2}\rho v^2 C_d A$ with ISA atmospheric density
-- **Wind profile:** logarithmic $V_{wind}(z) = \frac{u_*}{\kappa}\ln\frac{z}{z_0}$ (roughness length based on terrain)
-- **Parachute terminal velocity:** $v_{term} = \sqrt{\frac{2mg}{\rho C_d A}}$ with $C_d = 1.5$ for hemispherical chute
-- **ISA atmosphere:** pressure, temperature, density variation with altitude
+- `Document/Duck2Dragon.pdf`
+- `Present/Pre-Duck2Dragon.pdf`
+- `Present/Post-Duck2Dragon.pdf`
+- `docs/superpowers/specs/`
+- `docs/superpowers/plans/`
 
-### Outputs
+Test evidence:
 
-- **CEP95 metric:** 95% of landings fall within this radius from mean landing point (key for recovery planning)
-- **Landing scatter plot:** visual uncertainty envelope
-- **CSV export:** `landing_prediction_results_YYYYMMDD_HHMMSS.csv` — latitude, longitude, apogee, flight time per Monte Carlo run
-- **JSON export:** full statistics, metadata, and landing coordinates for GIS import
+- `Test/shock_test.mp4`
+- `Test/eject_test_01.mp4`
+- `Test/eject_test_02.mp4`
+- `Test/parachute_rocket_test.mp4`
+- `Test/parachute_cansat_test.MOV`
+- `Test/thermal_test_01.jpeg`
+- `Test/thermal_test_02.jpeg`
+- Other subsystem test videos in `Test/`
 
-### Validation
+## Flight Workflow
 
-Compare predictions against actual flight data:
+1. Run module tests for sensors, LoRa, deployment servo, and power.
+2. Upload `Rocket/cansat/cansat.ino` to the CanSat ESP32.
+3. Upload `Rocket/ground_station/ground_station.ino` to one or two receiver ESP32 boards.
+4. Upload and bench-test `Rocket/deployment/deployment.ino`.
+5. Start the Python monitor.
+6. Confirm live packets, RSSI/SNR, GPS fix, barometer, IMU quaternion, and power values.
+7. Save a short pre-flight replayable log.
+8. Launch and keep the monitor logging until recovery.
+9. Analyze saved logs with the notebooks in `Data/`.
 
-1. Fly the rocket and log telemetry to `Data/log.txt`
-2. Re-run notebook — telemetry comparison cell loads GPS trajectory
-3. Check prediction error and whether actual landing falls within CEP95 circle
-4. Adjust wind input or uncertainty parameters based on observed discrepancies
+## Safety Notes
 
-Typical CEP95 values: 50-200 m depending on wind speed, altitude, and parachute size.
-
----
-
-## Module-level testing
-
-Each file in `Module_Test/` is a self-contained Arduino sketch that exercises **one** sensor or peripheral. Use these for bring-up and troubleshooting before flashing the full `cansat.ino`.
-
-| Test            | Target board   | Verifies                             |
-| --------------- | -------------- | ------------------------------------ |
-| `ms5611.ino`    | TTGO ESP32     | Pressure / temp / altitude readout   |
-| `bno055.ino`    | TTGO ESP32     | Euler / accel / gyro / quat / calib  |
-| `adxl375.ino`   | TTGO ESP32     | High-G XYZ in g units                |
-| `ina219.ino`    | TTGO ESP32     | Bus V, shunt mV, mA, mW              |
-| `ds3231.ino`    | TTGO ESP32     | RTC date/time + temperature          |
-| `gps.ino`       | TTGO ESP32     | Lat/lon/altitude/sats over UART      |
-| `lora.ino`      | TTGO ESP32 ×2  | TX/RX loopback (toggle `MODE_TX/RX`) |
-| `sd_card.ino`   | TTGO ESP32     | SD on HSPI: write + readback         |
-| `servo.ino`     | Arduino Nano   | Servo sweep w/ deploy angles         |
-| `hc-020k.ino`   | TTGO ESP32     | Photo-encoder pulse counter / RPM    |
-
----
-
-## Wiring notes
-
-- **I2C bus** (SDA=21, SCL=22) is shared by BNO055, ADXL375, MS5611, and INA219. All four addresses are unique. Use 4.7 kΩ pull-ups if the breakout boards do not include them.
-- **SD card module** must be wired to the **HSPI** pins above, **not** the LoRa SPI pins. Sharing the LoRa bus risks corrupting in-flight transmissions.
-- **GPS module** (`GY-NEO-6M`) operates at 3.3 V — do not power from the Nano's 5 V rail.
-- **LoRa antenna** must be connected before powering up; transmitting without an antenna damages the SX1276 PA.
-- **Battery**: 3.7 V 1000 mAh LiPo through INA219 → TTGO `VBAT` / 5 V regulator input.
-- **Deployment board** is independently powered (separate battery or rocket BEC) for safety isolation from the flight computer.
-
----
+- Connect the LoRa antenna before powering any transmitter.
+- Verify the deployment servo direction and lock angle without pyrotechnic or spring load first.
+- Keep the deployment subsystem independently testable.
+- Confirm battery voltage and current readings before flight.
+- Confirm GPS fix and satellite count outdoors before launch.
+- Treat malformed telemetry as expected during startup; the monitor is designed to keep logging even when some rows are incomplete.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT. See `LICENSE`.

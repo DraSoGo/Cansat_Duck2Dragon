@@ -11,7 +11,7 @@
 #define SERVO_LOCKED_ANGLE     35      // Pre-deploy / locked position
 #define SERVO_DEPLOY_ANGLE     120     // Released / deployed position
 
-#define ARM_ALTITUDE_M         100    // Must reach this AGL altitude before apogee logic arms
+#define ARM_ALTITUDE_M         250    // Must reach this AGL altitude before apogee logic arms
 #define APOGEE_CONFIRM_COUNT   3       // Consecutive descending readings required
 #define APOGEE_DEADBAND_M      0.5    // Ignore altitude changes smaller than this (noise filter)
 #define BASELINE_SAMPLES       20      // Samples averaged at startup for ground pressure
