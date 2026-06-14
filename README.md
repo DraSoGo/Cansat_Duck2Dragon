@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/Rocket_lanch.gif" alt="Duck2Dragon rocket render" width="300">
+  <img src="assets/Rocket_lanch.gif" alt="Duck2Dragon rocket render" width="600">
 </p>
 
 ## **Team**
